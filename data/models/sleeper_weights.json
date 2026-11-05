@@ -1,0 +1,21 @@
+{
+ "pesos_cerebro": {
+  "pass_att": 0.4,
+  "pass_cmp": 0.45,
+  "pass_ints": 0.35,
+  "pass_rush_yds": 0.6,
+  "pass_tds": 0.7,
+  "pass_yds": 0.3,
+  "qb_rush_att": 0.6,
+  "qb_rush_yds": 0.45,
+  "rec_yds": 0.4,
+  "receptions": 0.45,
+  "rush_att": 0.5,
+  "rush_rec_yds": 0.3,
+  "rush_yds": 0.55,
+  "targets": 0.5,
+  "tds": 1.0
+ },
+ "max_season": 2024,
+ "n": 108477
+}

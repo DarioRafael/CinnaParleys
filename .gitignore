@@ -1,0 +1,23 @@
+# --- entorno y dependencias (se instalan con instalar.bat)
+.venv/
+__pycache__/
+*.pyc
+web/node_modules/
+web/.next/
+web/next-env.d.ts
+web/tsconfig.tsbuildinfo
+
+# --- datos locales: base de datos, descargas, simulaciones y registros (se generan solos)
+#     Sólo se suben los modelos ya entrenados (data/models) para no reentrenar horas en una PC nueva.
+data/*
+!data/models/
+*.log
+
+# --- configuración propia de cada PC (instalar.bat la genera con scripts/crear_mcp.py)
+.mcp.json
+.claude/settings.local.json
+
+# --- archivos de trabajo
+docs/uml_build/render/
+.DS_Store
+Thumbs.db

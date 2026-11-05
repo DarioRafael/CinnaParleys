@@ -1,0 +1,16 @@
+{
+ "betas": {
+  "pass_att": 0.1433,
+  "pass_cmp": 0.2049,
+  "pass_rush_yds": 0.1402,
+  "pass_yds": 0.163,
+  "qb_rush_att": 0.1295,
+  "rec_yds": 0.1631,
+  "receptions": 0.0789,
+  "rush_att": 0.0714,
+  "rush_rec_yds": 0.1932,
+  "rush_yds": 0.1582,
+  "targets": 0.0893
+ },
+ "max_season": 2025
+}

@@ -1,0 +1,14 @@
+# Saltos de línea: normales en el repo, pero los lanzadores de Windows siempre con CRLF
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.vbs text eol=crlf
+*.ps1 text eol=crlf
+
+# Modelos entrenados y archivos binarios: nunca convertir (LightGBM lee los .txt tal cual)
+data/models/** binary
+*.pkl binary
+*.parquet binary
+*.png binary
+*.pdf binary
+*.pptx binary
