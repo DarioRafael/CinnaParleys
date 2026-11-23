@@ -11,16 +11,22 @@ Todo es gratis: no usa APIs de pago ni créditos.
 
 ## Instalación en una PC nueva
 
-Requisitos: **Windows 10/11**, **Python 3.12**, **Node.js 20.9 o más nuevo** y **Git**. No necesitas cuentas ni llaves de ninguna API.
+Requisitos: **Windows 10/11** y **Git** (o descarga el ZIP desde GitHub: botón verde *Code* → *Download ZIP*).
+Python 3.12 y Node.js los revisa el instalador: si faltan, ofrece instalarlos con `winget` (el instalador oficial
+de Windows). No necesitas cuentas ni llaves de ninguna API.
 
 1. Clona el repositorio:
    ```bash
    git clone https://github.com/DarioRafael/CinnaParleys.git
    ```
-2. Doble clic en `instalar.bat`. Crea el entorno de Python, instala y compila la web, descarga la historia de la
-   NFL (2016 a hoy), entrena los modelos, hace la primera actualización y deja listo el conector de Claude
-   (`.mcp.json`). **La primera vez tarda un buen rato** (descarga varios cientos de MB).
+2. Doble clic en `instalar.bat`. Revisa Python 3.12 y Node.js, crea el entorno de Python, instala y compila la
+   web, descarga la historia de la NFL (2016 a hoy), entrena los modelos, hace la primera actualización y deja
+   listo el conector de Claude (`.mcp.json`). **La primera vez tarda un buen rato** (descarga varios cientos de MB).
+   Si tuvo que instalar Python o Node, te pide cerrar la ventana y volver a abrir `instalar.bat`. Si algún paso
+   falla, se detiene y lo dice; al volver a abrirlo no repite lo que ya quedó.
 3. Doble clic en `iniciar.bat` → se abre http://localhost:3100.
+4. (Opcional) Para las líneas reales de Playdoit: en la app, **Conectar Playdoit** → agrega la extensión
+   (carpeta `extension/`) en Brave o Chrome siguiendo los pasos de esa pantalla.
 
 Qué **no** viene en el repositorio (se genera solo en cada PC): la base de datos, las descargas, las
 simulaciones y los registros (`data/`), y `.mcp.json`. Los modelos ya entrenados sí vienen (`data/models/`).
