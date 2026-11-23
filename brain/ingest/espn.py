@@ -133,7 +133,8 @@ def summary(espn_id: str) -> dict:
                        for t in (d.get("boxscore") or {}).get("teams", []) or []},
         "scoring": [{"team": espn_abbr_to_team(((sp.get("team") or {}).get("abbreviation")) or ""),
                      "period": (sp.get("period") or {}).get("number"), "clock": (sp.get("clock") or {}).get("displayValue"),
-                     "type": ((sp.get("type") or {}).get("text")) or "", "text": sp.get("text") or ""}
+                     "type": ((sp.get("type") or {}).get("text")) or "", "text": sp.get("text") or "",
+                     "home_score": sp.get("homeScore"), "away_score": sp.get("awayScore")}
                     for sp in d.get("scoringPlays", []) or []],
     }
     for t in d.get("injuries", []) or []:

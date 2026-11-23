@@ -199,9 +199,24 @@ def score(J: dict, dist: dict, leg: dict) -> np.ndarray | None:
     if market in ("ml", "spread"):
         team = leg.get("team") or side
         return (m if team == J["home"] else -m) + jitter
-    if market == "total":
+    if market in ("total", "total_alt"):
         t = sim["total"].astype(float)
         return (t if side == "over" else -t) + jitter
+    if market in ("td_total", "td_team", "fg_total", "fg_team"):
+        k = "td" if market.startswith("td") else "fg"
+        if f"home_{k}_all" not in sim:
+            return None
+        if market.endswith("total"):
+            v = sim[f"home_{k}_all"].astype(float) + sim[f"away_{k}_all"].astype(float)
+        else:
+            v = sim[f"{'home' if leg.get('team') == J['home'] else 'away'}_{k}_all"].astype(float)
+        return (v if side == "over" else -v) + jitter
+    if market == "h1_total":
+        t = sim["home_h1"].astype(float) + sim["away_h1"].astype(float)
+        return (t if side == "over" else -t) + jitter
+    if market == "h1_ml":
+        d = sim["home_h1"].astype(float) - sim["away_h1"].astype(float)
+        return (d if leg.get("team") == J["home"] else -d) + jitter
     if market == "team_total":
         pts = (sim["home_pts"] if leg.get("team") == J["home"] else sim["away_pts"]).astype(float)
         return (pts if side == "over" else -pts) + jitter
@@ -225,11 +240,14 @@ def save(gid: str, J: dict) -> None:
         home_pts=sim["home_pts"].astype(np.int16), away_pts=sim["away_pts"].astype(np.int16),
         home_h1=np.asarray(sim.get("home_h1", sim["home_pts"])).astype(np.int16),
         away_h1=np.asarray(sim.get("away_h1", sim["away_pts"])).astype(np.int16),
+        **{k: np.asarray(sim[k]).astype(np.int8) for k in EXTRA_SIM if sim.get(k) is not None},
         meta=np.array(json.dumps({"cols": J["cols"], "td_pids": J["td_pids"], "home": J["home"], "away": J["away"],
                                   "roles": J["roles"]})))
 
 
 _LOADED: dict = {}
+# conteos que también se guardan (para touchdowns / goles de campo del partido dentro de un parlay)
+EXTRA_SIM = ("home_td_all", "away_td_all", "home_fg_all", "away_fg_all")
 
 
 def load(gid: str) -> dict | None:
@@ -243,7 +261,8 @@ def load(gid: str) -> dict | None:
     meta = json.loads(str(f["meta"]))
     J = {"cols": meta["cols"], "td_pids": meta["td_pids"], "home": meta["home"], "away": meta["away"],
          "roles": meta.get("roles", {}), "mus": f["mus"], "Z": f["Z"].astype(np.float32), "td": f["td"],
-         "sim": {k: f[k] for k in ("margin", "total", "home_pts", "away_pts", "home_h1", "away_h1")}}
+         "sim": {k: f[k] for k in ("margin", "total", "home_pts", "away_pts", "home_h1", "away_h1") + EXTRA_SIM
+                 if k in f.files}}
     if len(_LOADED) > 40:
         _LOADED.clear()
     _LOADED[gid] = (mt, J)

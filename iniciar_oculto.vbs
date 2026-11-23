@@ -16,6 +16,11 @@ sh.CurrentDirectory = dir
 sh.Run "cmd /c "".venv\Scripts\python.exe -m uvicorn api.main:app --app-dir . --host 127.0.0.1 --port 8765 > data\api.log 2>&1""", 0, False
 sh.Run "cmd /c ""web\arrancar_web.cmd > data\web.log 2>&1""", 0, False
 
+' con /arranque (lo usa el acceso directo de Inicio de Windows) sólo prende los servidores, sin abrir el navegador
+If WScript.Arguments.Count > 0 Then
+  If LCase(WScript.Arguments(0)) = "/arranque" Then WScript.Quit 0
+End If
+
 ' espera a que la interfaz responda (si hay que recompilarla tarda ~1 minuto)
 listo = False
 For i = 1 To 120

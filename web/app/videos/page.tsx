@@ -91,7 +91,7 @@ export default function VideosPage() {
                     <svg viewBox="0 0 24 24" className="ml-1 h-7 w-7 fill-current" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" /></svg>
                   </span>
                   <div className="absolute inset-x-4 bottom-3">
-                    <span className="font-hand text-lg font-semibold text-[#ffd9e3]">lo más nuevo</span>
+                    <span className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-[#ffd9e3]">Lo más nuevo</span>
                     <div className="font-display text-xl font-semibold leading-snug text-white md:text-2xl">{hero.titulo}</div>
                   </div>
                 </div>

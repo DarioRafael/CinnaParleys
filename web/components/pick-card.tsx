@@ -3,7 +3,7 @@
 import clsx from "clsx";
 import { ArrowDownRight, ArrowUpRight, BadgeCheck, ChevronDown, Crown, History, Info, Store } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { memo, useState } from "react";
 import { Pick, american, kickoffLabel, pct } from "@/lib/api";
 import { AddToParlay } from "./parlay";
 import { Headshot, Meter, TeamLogo, TierBadge } from "./ui";
@@ -59,14 +59,15 @@ export function RangeBar({ q, line, hist, unit }: { q: number[]; line?: number |
   );
 }
 
-export function PickCard({ p, expanded = false }: { p: Pick; expanded?: boolean }) {
+function PickCardBase({ p, expanded = false }: { p: Pick; expanded?: boolean }) {
   const [open, setOpen] = useState(expanded);
   const teams = useTeams();
   const r = Array.isArray(p.reasons) ? { facts: p.reasons as string[] } : p.reasons ?? {};
   const isPlayer = p.type === "player";
-  const href = isPlayer ? `/jugador/${p.player_id}` : `/partido/${p.game_id}`;
-  const team = teams[(isPlayer ? p.team : p.side) ?? ""] ?? null;
+  const href = isPlayer ? `/jugador/${p.player_id}` : `/partido/${p.game_id}${p.extra ? "?tab=mercados" : ""}`;
+  const team = teams[(isPlayer || p.extra ? p.team : p.side) ?? ""] ?? null;
   const facts = (r.facts ?? []).filter((f) => !f.startsWith("Mejor precio"));
+  const partidoHref = `/partido/${p.game_id}${p.extra ? "?tab=mercados" : ""}`;
   return (
     <div className="card overflow-hidden">
       <div className="flex items-start gap-3 px-4 pt-4">
@@ -95,7 +96,9 @@ export function PickCard({ p, expanded = false }: { p: Pick; expanded?: boolean 
           </div>
           <Link href={href} className="mt-1 block text-[15px] font-semibold leading-snug hover:underline">{p.title}</Link>
           <div className="mt-0.5 text-xs text-mute">
-            {isPlayer && `${p.position} · `}{p.game_label} · {kickoffLabel(p.kickoff)}
+            {isPlayer && `${p.position} · `}
+            <Link href={partidoHref} className="font-semibold text-ink2 underline-offset-2 hover:text-accent hover:underline"
+              title="Abrir el partido">{p.game_label}</Link> · {kickoffLabel(p.kickoff)}
           </div>
         </div>
       </div>
@@ -185,7 +188,7 @@ export function PickCard({ p, expanded = false }: { p: Pick; expanded?: boolean 
           <ChevronDown size={14} className={clsx("transition-transform", open && "rotate-180")} />
           {open ? "Menos detalle" : "Por qué"}
         </button>
-        <AddToParlay pick={p} />
+        {!p.extra && <AddToParlay pick={p} />}
       </div>
     </div>
   );
@@ -201,7 +204,10 @@ export function PickRow({ p }: { p: Pick }) {
         <div className="truncate text-xs text-mute">{Array.isArray(p.reasons) ? p.reasons[0] : p.reasons?.facts?.[1] ?? p.reasons?.facts?.[0]}</div>
       </div>
       <div className="w-14 text-right text-sm font-semibold tnum">{pct(p.prob)}</div>
-      <AddToParlay pick={p} compact />
+      {!p.extra && <AddToParlay pick={p} compact />}
     </div>
   );
 }
+
+/** Memo: al cambiar un filtro sólo se dibujan las tarjetas nuevas, no las que ya estaban. */
+export const PickCard = memo(PickCardBase);

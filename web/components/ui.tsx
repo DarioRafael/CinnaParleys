@@ -2,7 +2,7 @@
 
 import clsx from "clsx";
 import { Flame, Gem, ShieldCheck, type LucideIcon } from "lucide-react";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { TIER, Team, pct } from "@/lib/api";
 import { CinnaBun, SwirlSpinner } from "./brand";
 import { IconTile, PIcon, Tone } from "./icons";
@@ -113,8 +113,8 @@ export function Segmented<T extends string>({ value, onChange, options }: {
 export function SectionTitle({ children, right, icon, tone = "canela" }: { children: ReactNode; right?: ReactNode; icon?: PIcon; tone?: Tone }) {
   return (
     <div className="mb-3 flex items-end justify-between gap-3">
-      <h2 className="flex items-center gap-2 font-display text-[13px] font-medium uppercase tracking-[0.12em] text-ink2">
-        {icon ? <IconTile icon={icon} tone={tone} size={26} className="-my-1" /> : <span className="h-2 w-2 rounded-full bg-pink" />}{children}
+      <h2 className="flex items-center gap-2.5 font-display text-[17px] font-bold tracking-tight text-ink">
+        {icon ? <IconTile icon={icon} tone={tone} size={28} iconSize={17} className="-my-1" /> : <span className="h-4 w-[3px] rounded-full bg-[var(--brand)]" />}{children}
       </h2>
       {right}
     </div>
@@ -130,8 +130,8 @@ export function PageHeader({ icon: Icon, duo, tone = "canela", kicker, title, ch
       <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 max-w-3xl items-start gap-4">
           {duo ? (
-            <span className="hidden rounded-[24px] bg-pill p-1.5 shadow-[0_10px_22px_-12px_rgba(var(--shadow-color),0.45)] ring-1 ring-[var(--border)] sm:block">
-              <IconTile icon={duo} tone={tone} size={56} iconSize={32} iconClassName="float-a" />
+            <span className="hidden sm:block">
+              <IconTile icon={duo} tone={tone} size={52} iconSize={28} />
             </span>
           ) : Icon && (
             <div className="hidden h-12 w-12 shrink-0 place-items-center rounded-2xl bg-brand-fill text-on-brand shadow-[0_8px_18px_-8px_var(--brand)] sm:grid">
@@ -139,8 +139,8 @@ export function PageHeader({ icon: Icon, duo, tone = "canela", kicker, title, ch
             </div>
           )}
           <div className="min-w-0">
-            {kicker && <div className="-rotate-1 font-hand text-[19px] font-semibold leading-none text-brand">{kicker}</div>}
-            <h1 className="font-display text-[28px] font-semibold leading-tight tracking-tight text-ink md:text-[32px]">{title}</h1>
+            {kicker && <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brand">{kicker}</div>}
+            <h1 className="mt-0.5 font-display text-[26px] font-bold leading-tight tracking-tight text-ink md:text-[30px]">{title}</h1>
             {children && <div className="mt-1.5 space-y-1 text-sm leading-relaxed text-ink2">{children}</div>}
           </div>
         </div>
@@ -153,13 +153,13 @@ export function PageHeader({ icon: Icon, duo, tone = "canela", kicker, title, ch
 export function Empty({ children, mood = "sleepy" }: { children: ReactNode; mood?: "happy" | "think" | "sleepy" }) {
   return (
     <div className="card grid place-items-center gap-3 px-6 py-12 text-center text-sm text-ink2">
-      <CinnaBun size={64} mood={mood} className="bob" />
+      <CinnaBun size={56} mood={mood} />
       <div className="max-w-md">{children}</div>
     </div>
   );
 }
 
-const BAKING = ["Horneando datos…", "Amasando simulaciones…", "Glaseando probabilidades…", "Espolvoreando canela…"];
+const BAKING = ["Cargando datos…", "Corriendo simulaciones…", "Calculando probabilidades…", "Revisando líneas…"];
 
 export function Loading({ label }: { label?: string }) {
   const [i, setI] = useState(0);
@@ -169,7 +169,7 @@ export function Loading({ label }: { label?: string }) {
     return () => clearInterval(t);
   }, [label]);
   return (
-    <div className="grid place-items-center gap-3 py-24 text-sm font-semibold text-mute">
+    <div className="grid place-items-center gap-3 py-24 text-sm font-medium text-mute">
       <SwirlSpinner size={34} />
       {label ?? BAKING[i]}
     </div>
@@ -205,4 +205,20 @@ export function CountUp({ value, ms = 900 }: { value: number; ms?: number }) {
     return () => cancelAnimationFrame(raf);
   }, [value, ms]);
   return <>{v}</>;
+}
+
+/** Lista larga por tandas: dibuja `paso` elementos y agrega más al acercarte al final (sin trabar la página).
+ *  `reset` cambia cuando cambian los filtros, para volver a empezar arriba. */
+export function useProgresivo(total: number, reset: unknown, paso = 18) {
+  const [n, setN] = useState(paso);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => setN(paso), [reset, paso]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || n >= total) return;
+    const io = new IntersectionObserver((e) => { if (e[0]?.isIntersecting) setN((x) => x + paso); }, { rootMargin: "900px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [n, total, paso]);
+  return { n, ref, hayMas: n < total };
 }

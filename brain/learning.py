@@ -86,6 +86,12 @@ def grade_finished() -> int:
                 vals[gs] = v
         hs, as_ = g["home_score"], g["away_score"]
         ot = "OT" in (g.get("status_detail") or "")
+        from . import anotaciones as AN
+        try:
+            anot = AN.reales_espn(s, g["home"], g["away"])       # touchdowns, goles de campo, patadas y medio tiempo
+        except Exception as e:  # noqa: BLE001
+            log.warning("anotaciones reales %s: %s", g["game_id"], e)
+            anot = None
         rows = []
         for r in logs:
             parts = r["pick_id"].split("|")
@@ -115,6 +121,8 @@ def grade_finished() -> int:
                 elif mk == "ot":
                     actual = 1.0 if ot else 0.0
                     result = "win" if ot else "loss"
+                elif mk in AN.MERCADOS_EXTRA:
+                    actual, result = AN.resultado(mk, parts[1] or None, r["side"], r["line"], anot, g["home"], g["away"], hs, as_)
             rows.append({"pick_id": r["pick_id"], "game_id": r["game_id"], "player_id": r["player_id"],
                          "market": r["market"], "side": r["side"], "line": r["line"], "prob": r["prob"],
                          "prob_model": r["prob_model"], "tier": r["tier"], "confidence": r["confidence"],
@@ -142,6 +150,8 @@ def grade_finished() -> int:
         AP.calificar()                       # las apuestas reales del usuario
         from . import super_parlay as SPL
         SPL.grade()                          # el súper parlay y su semáforo
+        from . import armados as ARM
+        ARM.grade()                          # los parlays armados por partido
     except Exception as e:  # noqa: BLE001
         log.warning("plan: %s", e)
     if n:
@@ -325,6 +335,19 @@ def performance() -> dict:
     except Exception:  # noqa: BLE001
         out["props_backtest"] = None
     out["game_backtest"] = db.kv_get("game_backtest")
+    try:                        # mercados del partido (touchdowns, goles de campo, puntos alternos…): su validación
+        from . import anotaciones as AN
+        c = AN.cal()
+        nombres = {"td_total": "Touchdowns del partido", "td_equipo": "Touchdowns por equipo", "h1_gana": "Ganador de la 1ª mitad",
+                   "margen": "Margen de victoria", "pts_pateador": "Puntos del pateador", "fg_total": "Goles de campo del partido",
+                   "fg_equipo": "Goles de campo por equipo", "tiempo_extra": "Tiempo extra", "puntos_total": "Puntos (cualquier línea)",
+                   "puntos_equipo": "Puntos por equipo", "h1_total": "Puntos de la 1ª mitad"}
+        out["mercados_partido"] = {"partidos": c.get("partidos"), "temporadas": c.get("temporadas"), "familias": [
+            {"mercado": nombres.get(k, k), "veredicto": v.get("veredicto"), "mejora_pct": v.get("mejora_pct"),
+             "error_calibracion": v.get("error_calibracion"), "n": v.get("n"), "peso_simulador": v.get("w")}
+            for k, v in sorted((c.get("familias") or {}).items(), key=lambda kv: -(kv[1].get("mejora_pct") or 0))]} if c else None
+    except Exception:  # noqa: BLE001
+        out["mercados_partido"] = None
     bt = db.kv_get("backtest_report") or {}
     out["real_lines"] = {"resumen": bt.get("resumen"), "built": bt.get("built"), "n": bt.get("n"),
                          "calibracion": {k: v.get("calibracion") for k, v in (bt.get("by_kind") or {}).items()},
@@ -617,6 +640,8 @@ def weekly() -> dict:
             GH.build()
             from scripts.validacion import main as validar
             validar()
+            from scripts.validar_anotaciones import main as validar_anotaciones
+            validar_anotaciones()             # pesos de touchdowns / goles de campo / puntos alternos con la semana nueva
         except Exception as e:  # noqa: BLE001
             log.warning("récord de guiones / validación: %s", e)
         ME.reset()

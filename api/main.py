@@ -1,19 +1,24 @@
 """API del Cerebro NFL (FastAPI) + programador de actualizaciones automáticas."""
 from __future__ import annotations
 
+import functools
+import inspect
 import sys
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from apscheduler.schedulers.background import BackgroundScheduler  # noqa: E402
-from fastapi import FastAPI, HTTPException, Query  # noqa: E402
+from fastapi import FastAPI, HTTPException, Query, Request  # noqa: E402
+from fastapi.concurrency import run_in_threadpool  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from brain import db, fuentes as FU, learning, pipeline  # noqa: E402
+from brain import db, fuentes as FU, guiones as GU, learning, pipeline  # noqa: E402
 from brain.config import REFRESH_MINUTES, STALE_MINUTES, TIER_LABEL  # noqa: E402
 from brain.ingest import espn  # noqa: E402
 from brain.models import props as PR  # noqa: E402
@@ -25,6 +30,7 @@ from brain.util import get_logger, iso, now_utc, parse_dt  # noqa: E402
 log = get_logger("api")
 app = FastAPI(title="CinnaParleys", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 scheduler = BackgroundScheduler(timezone="America/Mexico_City")
 
 
@@ -67,6 +73,7 @@ def _live_scores():
             done = set(db.kv_get("graded_games", []) or [])
             if any(r["game_id"] not in done for r in db.query("SELECT game_id FROM games WHERE status='post'")):
                 learning.grade_finished()
+                _bump()
     except Exception as e:  # noqa: BLE001
         log.warning("marcador en vivo: %s", e)
 
@@ -78,6 +85,39 @@ def _watch():
         watcher.run()
     except Exception as e:  # noqa: BLE001
         log.warning("vigilante: %s", e)
+
+
+_DESPIERTA: dict = {"on": False, "hasta": None}
+
+
+def _ventana_de_partidos(antes_h: float = 3.0, despues_h: float = 4.0) -> bool:
+    """¿Hay un partido que empieza en las próximas `antes_h` horas o que sigue en juego?"""
+    now = now_utc()
+    for g in db.query("SELECT kickoff, status FROM games WHERE status IN ('pre', 'in')"):
+        ko = parse_dt(g["kickoff"])
+        if g["status"] == "in" or (ko and timedelta(hours=-despues_h) <= ko - now <= timedelta(hours=antes_h)):
+            return True
+    return False
+
+
+def _no_dormir():
+    """Que Windows no se duerma solo mientras hay partidos cerca o en juego (inactivos 90 min antes, en vivo).
+    Sólo evita la suspensión por inactividad; si alguien apaga la PC, se apaga. SetThreadExecutionState vale por
+    hilo, por eso vive en su propio hilo."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+    while True:
+        try:
+            on = _ventana_de_partidos()
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
+            if on != _DESPIERTA["on"]:
+                log.info("modo partido: %s", "la PC no se dormirá" if on else "la PC puede dormirse")
+            _DESPIERTA.update(on=on, hasta=iso(now_utc()))
+        except Exception as e:  # noqa: BLE001
+            log.warning("no dormir: %s", e)
+        time.sleep(300)
 
 
 def _any_kickoff_passed() -> bool:
@@ -95,13 +135,18 @@ def _startup():
     scheduler.add_job(_gameday, "interval", minutes=10, id="gameday", max_instances=1, coalesce=True)
     scheduler.add_job(_live_scores, "interval", minutes=2, id="live", max_instances=1, coalesce=True)
     scheduler.add_job(_watch, "interval", minutes=5, id="watch", max_instances=1, coalesce=True)
+    scheduler.add_job(_warm, "interval", minutes=1, id="warm", max_instances=1, coalesce=True)
     scheduler.add_job(pipeline.refresh, "interval", minutes=REFRESH_MINUTES, args=["quick"], id="hourly",
                       max_instances=1, coalesce=True)
     scheduler.add_job(pipeline.refresh, "cron", hour=8, minute=15, args=["full"], id="daily", max_instances=1)
     scheduler.add_job(_weekly, "cron", day_of_week="tue", hour=9, minute=30, id="weekly", max_instances=1)
     scheduler.start()
+    _bg(_no_dormir)
     if _stale():
         _bg(pipeline.refresh, "quick")
+    else:
+        _bg(_warm)
+    _bg(_precargar_ocr)
 
 
 def _stale() -> bool:
@@ -147,12 +192,101 @@ def _inj_counts() -> dict:
     return out
 
 
+# ============================================================ caché de respuestas
+# Lo pesado (picks, súper parlay, guiones, plan, rendimiento) se calcula UNA vez por versión de los datos y se
+# precalienta en segundo plano después de cada actualización: cambiar de pantalla es instantáneo.
+# La versión cambia con: cada actualización, el marcador en vivo, un partido que empieza o se califica, y lo que
+# el usuario guarda (mínimos de Draftea, apuestas).
+_RESP_CACHE: dict = {}
+_KEY_LOCKS: dict = {}
+_LOCK = threading.Lock()
+_BUMP = [0]
+
+
+def _bump() -> None:
+    _BUMP[0] += 1
+
+
+def _data_version() -> str:
+    lr = (db.kv_get("last_refresh") or {}).get("at")
+    live = (db.kv_get("live_last") or {}).get("at")
+    n = db.query("SELECT COUNT(*) AS n, COALESCE(SUM(home_score + away_score), 0) AS pts FROM games "
+                 "WHERE status != 'post'")[0]
+    graded = len(db.kv_get("graded_games", []) or [])
+    return f"{lr}|{live}|{n['n']}|{n['pts']}|{graded}|{_BUMP[0]}"
+
+
+def cached(ttl: float = 1800):
+    """Guarda la respuesta por (función, parámetros) mientras no cambie la versión de los datos."""
+    def deco(fn):
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            b = sig.bind(*args, **kwargs)
+            b.apply_defaults()
+            key = (fn.__name__, tuple(b.arguments.items()))
+            ver = _data_version()
+            hit = _RESP_CACHE.get(key)
+            if hit and hit[0] == ver and time.time() - hit[1] < ttl:
+                return hit[2]
+            with _LOCK:
+                klock = _KEY_LOCKS.setdefault(key, threading.Lock())
+            with klock:                         # si ya se está calculando, espera y reutiliza
+                hit = _RESP_CACHE.get(key)
+                if hit and hit[0] == ver and time.time() - hit[1] < ttl:
+                    return hit[2]
+                val = fn(*args, **kwargs)
+                with _LOCK:
+                    if len(_RESP_CACHE) > 240:
+                        for k in sorted(_RESP_CACHE, key=lambda k: _RESP_CACHE[k][1])[:60]:
+                            _RESP_CACHE.pop(k, None)
+                    _RESP_CACHE[key] = (ver, time.time(), val)
+                return val
+        return wrapper
+    return deco
+
+
+def _precargar_ocr() -> None:
+    try:
+        from brain import escaner as ESC
+        ESC._engine()
+    except Exception as e:  # noqa: BLE001
+        log.warning("OCR no disponible: %s", e)
+
+
+_WARM = {"ver": None}
+
+
+def _warm() -> None:
+    """Precalienta las pantallas pesadas cuando cambian los datos (y no hay una actualización en curso)."""
+    try:
+        if pipeline.STATE.get("running"):
+            return
+        ver = _data_version()
+        if ver == _WARM["ver"]:
+            return
+        _WARM["ver"] = ver
+        t0 = time.time()
+        jobs = [(menu, {}), (week, {}), (picks, {"limit": 500}), (picks, {"tier": "segura", "limit": 60}),
+                (super_parlay, {}), (plan, {}), (performance, {}), (guiones, {"n": 8, "nivel": 0.65})]
+        for fn, kw in jobs:
+            try:
+                fn(**kw)
+            except Exception as e:  # noqa: BLE001
+                log.warning("precalentar %s: %s", fn.__name__, e)
+        log.info("pantallas precalentadas en %.1fs", time.time() - t0)
+    except Exception as e:  # noqa: BLE001
+        log.warning("precalentar: %s", e)
+
+
 # ============================================================ endpoints
 @app.get("/api/status")
 def status():
     return {"state": pipeline.STATE, "last_refresh": db.kv_get("last_refresh"), "current": db.kv_get("current"),
             "gameday": db.kv_get("gameday_mode"),
-            "sources": db.kv_get("sources"), "fuentes": FU.estado(), "calibration": db.kv_get("calibration"),
+            "sources": db.kv_get("sources"), "fuentes": FU.estado(), "frescura": GU.frescura(),
+            "despierta": _DESPIERTA, "calibration": db.kv_get("calibration"),
             "last_weekly": db.kv_get("last_weekly"), "stale": _stale(), "now": iso(now_utc()),
             "refresh_minutes": REFRESH_MINUTES, "carpeta": str(Path(__file__).resolve().parent.parent)}
 
@@ -209,6 +343,7 @@ def live():
 
 
 @app.get("/api/week")
+@cached(ttl=60)
 def week(week: int | None = None, season: int | None = None):
     cur = db.kv_get("current") or {}
     season = season or cur.get("season")
@@ -223,6 +358,8 @@ def week(week: int | None = None, season: int | None = None):
     best: dict = {}
     for r in db.query("SELECT game_id, data, confidence, tier FROM picks WHERE tier IN ('segura', 'valor')"):
         d = db.loads(r["data"], {})
+        if d.get("extra"):
+            continue                    # el destacado de la tarjeta sigue siendo un pick de jugador o del partido
         key = (bool(d.get("super_elite")), bool(d.get("elite")), d.get("kind") != "alt", r["confidence"] or 0)
         if r["game_id"] not in best or key > best[r["game_id"]][0]:
             best[r["game_id"]] = (key, d)
@@ -242,7 +379,8 @@ def game(game_id: str):
     pred = (db.query("SELECT data FROM game_preds WHERE game_id=:g", g=game_id) or [{}])[0].get("data")
     pred = db.loads(pred, {}) or {}
     card = _game_card(g, pred, None, _inj_counts())
-    card["pred_full"] = pred
+    card["pred_full"] = {k: v for k, v in pred.items() if k != "anotaciones"}
+    card["mercados"] = _mercados(g, pred)
     card["autopsia"] = (db.kv_get("autopsias") or {}).get(game_id)
     card["en_vivo"] = (db.kv_get("live_state") or {}).get(game_id)
     card["publico"] = (db.kv_get("publico") or {}).get(str(g.get("espn_id")))
@@ -263,7 +401,154 @@ def game(game_id: str):
     return card
 
 
+def _mercados(g: dict, pred: dict) -> dict | None:
+    """Touchdowns, goles de campo, puntos alternos, pateadores, 1ª mitad, margen y tiempo extra del partido."""
+    from brain import anotaciones as AN
+    try:
+        m = AN.mercados({**g, "market": db.loads(g.get("market"), {}) or {}}, pred)
+    except Exception as e:  # noqa: BLE001
+        log.warning("mercados %s: %s", g.get("game_id"), e)
+        return None
+    if m:
+        from brain.ingest import playdoit as PDO
+        pz = PDO.pausa()
+        m["playdoit_pausa"] = pz if pz and pz.get("desde") else None
+    return m
+
+
+@app.get("/api/mercados/{game_id}")
+@cached(ttl=900)
+def mercados_partido(game_id: str):
+    rows = db.query("SELECT * FROM games WHERE game_id=:g", g=game_id)
+    if not rows:
+        raise HTTPException(404, "Partido no encontrado")
+    pred = db.loads((db.query("SELECT data FROM game_preds WHERE game_id=:g", g=game_id) or [{}])[0].get("data"), {}) or {}
+    return {"game_id": game_id, "home": rows[0]["home"], "away": rows[0]["away"], "mercados": _mercados(rows[0], pred)}
+
+
+class Importar(BaseModel):
+    texto: str
+    titulo: str = ""
+    url: str = ""
+
+
+@app.post("/api/importar_casa")
+def importar_casa(b: Importar):
+    """«Enviar a Cinna»: el texto de la página del partido que el usuario tiene abierta en su casa (Playdoit, Team
+    Mexico…), mandado por él desde su navegador. Guarda las líneas y momios reales de ese partido."""
+    from brain import importar as IM
+    if len(b.texto) > 2_000_000:
+        raise HTTPException(413, "Texto demasiado largo")
+    r = IM.importar(b.texto, b.titulo, b.url)
+    if r.get("ok"):
+        _bump()
+    return r
+
+
+class CapturaPD(BaseModel):
+    url: str = ""
+    texto: str
+
+
+_CAPT: dict = {"timer": None}
+
+
+@app.post("/api/playdoit/captura")
+def playdoit_captura(b: CapturaPD):
+    """Lo que la extensión «Cinna» del navegador del usuario manda al abrir un partido en Playdoit: los datos que
+    Playdoit ya le envió a su navegador. Se guardan y, un minuto después de la última, se actualiza todo."""
+    import json as _json
+    from brain.ingest import playdoit as PDO
+    if len(b.texto) > 8_000_000:
+        raise HTTPException(413, "Demasiado grande")
+    try:
+        d = _json.loads(b.texto)
+    except ValueError:
+        return {"guardado": False}
+    r = PDO.capturar(b.url, d)
+    ahora = time.time()
+    # Una sola actualización por tanda: 45 s después de la primera captura nueva (para que alcances a abrir varios
+    # partidos) y, como mucho, una cada 5 minutos aunque Playdoit siga mandando el partido mientras lo tienes abierto.
+    if r.get("guardado") and r.get("tipo") == "partido" and r.get("cambio") and not ((_CAPT.get("pendiente") or 0) > ahora):
+        espera = max(45.0, 300 - (ahora - (_CAPT.get("ultimo") or 0)))
+
+        def _correr():
+            _CAPT["ultimo"] = time.time()
+            _CAPT["pendiente"] = None
+            pipeline.request("quick")
+        t = threading.Timer(espera, _correr)
+        t.daemon = True
+        t.start()
+        _CAPT.update(timer=t, pendiente=ahora + espera)
+    return r
+
+
+@app.get("/api/playdoit/estado")
+def playdoit_estado():
+    from brain.ingest import playdoit as PDO
+    e = PDO.estado_capturas()
+    pend = _CAPT.get("pendiente")
+    e["actualiza_en"] = max(0, round(pend - time.time())) if pend and pend > time.time() else None
+    e["actualizando"] = bool(pipeline.STATE.get("running"))
+    e["ultima_actualizacion"] = (db.kv_get("last_refresh") or {}).get("at")
+    return e
+
+
+@app.get("/api/playdoit/semana")
+def playdoit_semana():
+    """Los partidos que faltan de la jornada, con su enlace directo a Playdoit (para abrirlos con un clic cada uno) y si
+    ya llegaron con la extensión (en las últimas 12 h)."""
+    from brain.ingest import playdoit as PDO
+    cur = db.kv_get("current") or {}
+    gs = db.query("SELECT game_id, kickoff, home, away, status FROM games WHERE season=:s AND week=:w AND status='pre' "
+                  "ORDER BY kickoff", s=cur.get("season"), w=cur.get("week"))
+    ids = PDO.ids_conocidos()
+    ahora = time.time()
+    out = []
+    for g in gs:
+        k = ids.get((g["away"], g["home"])) or {}
+        fresco = bool(k.get("at_ts")) and ahora - float(k["at_ts"]) < PDO.VIGENCIA_H * 3600
+        out.append({"game_id": g["game_id"], "kickoff": g["kickoff"], "home": _team(g["home"], None, None),
+                    "away": _team(g["away"], None, None), "pd_id": k.get("pd_id"),
+                    "url": PDO.URL_EVENTO.format(id=k["pd_id"]) if k.get("pd_id") else None,
+                    "recibido": k.get("at") if fresco else None, "mercados": k.get("mercados") if fresco else None})
+    return {"semana": cur.get("week"), "partidos": out, "faltan": sum(1 for x in out if not x["recibido"])}
+
+
+@app.post("/api/abrir_extension")
+def abrir_extension():
+    """Abre en el Explorador la carpeta de la extensión (para «Cargar extensión sin empaquetar»)."""
+    import os
+    carpeta = Path(__file__).resolve().parent.parent / "extension"
+    if not carpeta.exists():
+        raise HTTPException(404, "No encuentro la carpeta de la extensión")
+    try:
+        os.startfile(str(carpeta))          # noqa: S606 (sólo abre la carpeta en el Explorador de Windows)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"No pude abrirla: {e}") from e
+    return {"ok": True, "carpeta": str(carpeta)}
+
+
+@app.get("/api/mercados/{game_id}/calc")
+def mercados_calc(game_id: str, clave: str, linea: float):
+    """Probabilidad de Más/Menos y momio justo de CUALQUIER línea de un mercado del partido."""
+    from brain import anotaciones as AN
+    rows = db.query("SELECT * FROM games WHERE game_id=:g", g=game_id)
+    if not rows:
+        raise HTTPException(404, "Partido no encontrado")
+    pred = db.loads((db.query("SELECT data FROM game_preds WHERE game_id=:g", g=game_id) or [{}])[0].get("data"), {}) or {}
+    if not pred.get("anotaciones"):
+        raise HTTPException(404, "Todavía no hay simulación de este partido")
+    if not 0 <= linea <= 150:
+        raise HTTPException(400, "Línea fuera de rango")
+    r = AN.calcular({**rows[0], "market": db.loads(rows[0].get("market"), {}) or {}}, pred, clave, float(linea))
+    if r is None:
+        raise HTTPException(400, "Mercado no disponible")
+    return r
+
+
 @app.get("/api/picks")
+@cached(ttl=900)
 def picks(tier: str | None = None, kind: str | None = None, game_id: str | None = None, limit: int = 300,
           all: bool = False):
     q = "SELECT p.data, p.tier, p.confidence FROM picks p JOIN games g USING(game_id) WHERE g.status='pre'"
@@ -590,6 +875,45 @@ def videos(team: str | None = None, player_id: str | None = None, tipo: str | No
     return {"videos": [_clip_out(c) for c in sel], "tipos": tipos, "total": len(clips)}
 
 
+@app.get("/api/video/soporte")
+def video_soporte():
+    """¿Hay ffmpeg para convertir videos a WebM? (lo usa el reproductor para explicar qué falta)."""
+    import shutil
+    return {"ffmpeg": bool(shutil.which("ffmpeg"))}
+
+
+@app.get("/api/video/{clip_id}/webm")
+def video_webm(clip_id: str):
+    """Para navegadores sin H.264 (pasa en varias distros de Linux): convierte el mp4 de ESPN a WebM (VP8 + Vorbis)
+    mientras se ve, con ffmpeg. No guarda nada; si no hay ffmpeg instalado, avisa cómo instalarlo."""
+    import shutil
+    import subprocess
+    from fastapi.responses import StreamingResponse
+    from brain.ingest import videos as VID
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise HTTPException(501, "Tu navegador no reproduce el formato de ESPN (H.264) y falta ffmpeg para convertirlo. "
+                                 "En Linux: sudo apt install ffmpeg (o el gestor de tu distro).")
+    url = VID.buscar(clip_id)
+    if not url or not VID.es_de_espn(url):
+        raise HTTPException(404, "Video no encontrado")
+    cmd = [ff, "-loglevel", "error", "-i", url, "-vf", "scale='min(1280,iw)':-2", "-c:v", "libvpx", "-deadline", "realtime",
+           "-cpu-used", "8", "-b:v", "1600k", "-c:a", "libvorbis", "-b:a", "128k", "-f", "webm", "pipe:1"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def chorro():
+        try:
+            while True:
+                chunk = proc.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            proc.kill()
+
+    return StreamingResponse(chorro(), media_type="video/webm")
+
+
 @app.get("/api/partido/{game_id}/jugadas")
 def jugadas(game_id: str):
     """Jugadas de anotación y videos de un partido (en vivo o terminado) + clips de sus dos equipos."""
@@ -609,6 +933,7 @@ def jugadas(game_id: str):
 
 
 @app.get("/api/menu")
+@cached(ttl=30)
 def menu():
     """Lo que necesita el menú lateral en una sola llamada: semana, próximo kickoff, en vivo, conteos, clips y tips."""
     cur = db.kv_get("current") or {}
@@ -662,6 +987,7 @@ def menu():
 
 
 @app.get("/api/plan")
+@cached(ttl=900)
 def plan(banca: float = 1000.0, riesgo: str = "conservador"):
     """Plan de la semana: Top Élite con la línea exacta de Playdoit, parlays según el perfil y cuánto apostar."""
     from brain import plan as PN
@@ -674,6 +1000,7 @@ class Minimos(BaseModel):
 
 
 @app.get("/api/super_parlay")
+@cached(ttl=900)
 def super_parlay(semaforo: str = "amarillo", solo: str | None = None):
     """Súper parlay: cada pata (escalón más bajo de la casa) revisada con rival, Kalshi, guion, salud, clima e historias
     trampa; parlays de 3, 4 y 5 con la prob. conjunta de la simulación y el plan de juego de cada partido."""
@@ -687,6 +1014,7 @@ def super_parlay(semaforo: str = "amarillo", solo: str | None = None):
 def draftea_minimos(m: Minimos):
     """Guarda los mínimos que el usuario ve en Draftea (texto libre: "Herbert 16 pases completos, Lawrence 208 yds")."""
     from brain import super_parlay as SPL
+    _bump()
     return SPL.guardar_minimos(m.texto)
 
 
@@ -701,6 +1029,7 @@ def registrar_apuesta(a: Apuesta):
     """Registra lo que el usuario apostó: cada pata revisada (prob., semáforo, razones) y la prob. conjunta real."""
     from brain import apuestas as AP
     from brain import draftea as DR
+    _bump()
     return DR._no_nan(AP.registrar(a.texto, a.monto, a.pago))
 
 
@@ -713,7 +1042,114 @@ def mis_apuestas():
     return DR._no_nan(AP.resumen())
 
 
+# ============================================================ escáner de parlays (captura de pantalla)
+class TextoParlay(BaseModel):
+    texto: str
+    pago: float | None = None
+
+
+@app.post("/api/escanear")
+async def escanear(request: Request):
+    """Captura de un parlay (cuerpo = la imagen PNG/JPG) → patas leídas con OCR local + análisis completo."""
+    img = await request.body()
+    if not img:
+        raise HTTPException(400, "Manda la imagen de la captura.")
+    if len(img) > 15 * 1024 * 1024:
+        raise HTTPException(413, "La imagen pesa más de 15 MB.")
+    from brain import escaner as ESC
+    from brain import draftea as DR
+    try:
+        return DR._no_nan(await run_in_threadpool(ESC.escanear, img))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+# ============================================================ parlays armados y líneas de tu casa
+@app.get("/api/armados")
+@cached(ttl=900)
+def armados(game_id: str | None = None, patas: int | None = None, pago: float | None = None, tipos: str | None = None,
+            excluir: str | None = None):
+    """Por partido: Seguro, Del partido, Partido cerrado, Si gana el favorito, Balanceado y Buen pago (hasta 3 opciones
+    cada uno) con el porqué de cada pata. Con patas/pago/tipos/excluir arma además uno «A tu medida»."""
+    from brain import armados as ARM
+    from brain import draftea as DR
+    prefs = {"patas": patas if patas and 2 <= patas <= 6 else None, "pago": pago if pago and 1.2 <= pago <= 100 else None,
+             "tipos": [t for t in (tipos or "").split(",") if t in ("jugadores", "partido", "td")] or None,
+             "excluir": [x.strip() for x in (excluir or "").split(",") if x.strip()]}
+    return DR._no_nan(ARM.build(game_id, prefs if any(prefs.values()) else None))
+
+
+@app.post("/api/armados/repensar")
+def armados_repensar(game_id: str | None = None):
+    """«Volver a pensar»: guarda cómo están los armados ahora (para decir qué cambió) y trae lo último (lesiones,
+    inactivos, noticias, líneas de la extensión de Playdoit). Al terminar la actualización se rearman solos."""
+    from brain import armados as ARM
+    try:
+        actual = ARM.build(game_id)
+        prev = db.kv_get("armados_antes") or {}
+        partidos = dict(prev.get("partidos") or {}) if game_id else {}
+        partidos.update(ARM.foto(actual.get("partidos") or []))
+        db.kv_set("armados_antes", {"at": iso(now_utc()), "partidos": partidos})
+    except Exception as e:  # noqa: BLE001
+        log.warning("foto de armados: %s", e)
+    started = pipeline.request("quick")
+    return {"started": started, "running": bool(pipeline.STATE.get("running")), "step": pipeline.STATE.get("step")}
+
+
+class LineasTexto(BaseModel):
+    texto: str
+    casa: str = "Playdoit"
+
+
+@app.get("/api/lineas-casa")
+def lineas_casa(game_id: str | None = None):
+    from brain import lineas_casa as LC
+    return {"lineas": LC.listado(game_id), "patron": LC.patron()}
+
+
+@app.post("/api/lineas-casa/texto")
+def lineas_casa_texto(body: LineasTexto):
+    from brain import lineas_casa as LC
+    r = LC.desde_texto(body.texto, body.casa)
+    _bump()
+    return r
+
+
+@app.post("/api/lineas-casa/escanear")
+async def lineas_casa_escanear(request: Request, casa: str = "Playdoit"):
+    """Captura de la pantalla de mercados de tu casa (escalones X+ y Más/Menos con sus momios)."""
+    img = await request.body()
+    if not img:
+        raise HTTPException(400, "Manda la imagen de la captura.")
+    if len(img) > 15 * 1024 * 1024:
+        raise HTTPException(413, "La imagen pesa más de 15 MB.")
+    from brain import lineas_casa as LC
+    try:
+        r = await run_in_threadpool(LC.desde_imagen, img, casa)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    _bump()
+    return r
+
+
+@app.delete("/api/lineas-casa")
+def lineas_casa_borrar(clave: str | None = None):
+    from brain import lineas_casa as LC
+    n = LC.borrar(clave)
+    _bump()
+    return {"borradas": n}
+
+
+@app.post("/api/analizar_parlay")
+def analizar_parlay(body: TextoParlay):
+    """Analiza un parlay escrito o corregido a mano (sin guardarlo): probabilidades, semáforo, valor y pata más débil."""
+    from brain import escaner as ESC
+    from brain import draftea as DR
+    return DR._no_nan(ESC.analizar_texto(body.texto, body.pago))
+
+
 @app.get("/api/guiones")
+@cached(ttl=1800)
 def guiones(n: int = 8, nivel: float = 0.65):
     """Parlays con guion: cada uno cuenta una historia del partido (por qué va a pasar, qué está en contra y qué lo
     tumbaría) y sólo lleva patas que dependen de esa historia; probabilidad conjunta de la simulación."""
@@ -785,17 +1221,112 @@ def injuries(team: str | None = None, key_only: bool = False):
 
 
 @app.get("/api/teams")
+@cached(ttl=900)
 def teams():
     ranks = db.kv_get("team_ranks") or {}
     meta = team_meta()
+    nxt: dict = {}
+    for g in db.query("SELECT game_id, kickoff, home, away, status FROM games WHERE status IN ('pre','in') ORDER BY kickoff"):
+        for t, opp, local in ((g["home"], g["away"], True), (g["away"], g["home"], False)):
+            nxt.setdefault(t, {"game_id": g["game_id"], "kickoff": g["kickoff"], "rival": opp, "local": local,
+                               "status": g["status"]})
+    preds = {r["game_id"]: db.loads(r["data"], {}) for r in db.query("SELECT game_id, data FROM game_preds")}
     out = []
     for t, r in ranks.items():
-        out.append({**meta.get(t, {"abbr": t}), "ranks": r})
+        n = nxt.get(t)
+        if n:
+            pr = preds.get(n["game_id"]) or {}
+            pw = pr.get("p_home") if n["local"] else pr.get("p_away")
+            n = {**n, "p_gana": pw, "rival_team": meta.get(n["rival"], {"abbr": n["rival"]})}
+        out.append({**meta.get(t, {"abbr": t}), "ranks": r, "proximo": n})
     out.sort(key=lambda x: x["ranks"].get("net", {}).get("rank", 99))
     return {"teams": out}
 
 
+@app.get("/api/equipo/{abbr}")
+@cached(ttl=900)
+def equipo(abbr: str):
+    """Ficha de un equipo: su próximo partido (con la predicción), resultados de la temporada, fortalezas y debilidades,
+    jugadores clave con su proyección, lesiones, picks de su próximo partido y noticias."""
+    from brain.teams import canon
+    t = canon(abbr.upper()) or abbr.upper()
+    meta = team_meta()
+    if t not in meta:
+        raise HTTPException(404, "Equipo no encontrado")
+    ranks = (db.kv_get("team_ranks") or {}).get(t) or {}
+    cur = (db.kv_get("current") or {}).get("season")
+    gs = db.query("SELECT * FROM games WHERE (home=:t OR away=:t) AND season=:s ORDER BY kickoff", t=t, s=cur)
+    preds = {r["game_id"]: db.loads(r["data"], {}) for r in db.query(
+        "SELECT game_id, data FROM game_preds WHERE game_id IN (%s)" % ",".join(f"'{g['game_id']}'" for g in gs))} if gs else {}
+    ic = _inj_counts()
+    resultados, w, l_, tie = [], 0, 0, 0
+    for g in gs:
+        if g["status"] != "post" or g["home_score"] is None:
+            continue
+        local = g["home"] == t
+        pf, pa = (g["home_score"], g["away_score"]) if local else (g["away_score"], g["home_score"])
+        res = "G" if pf > pa else "P" if pf < pa else "E"
+        w, l_, tie = w + (res == "G"), l_ + (res == "P"), tie + (res == "E")
+        mk = db.loads(g["market"], {}) or {}
+        sp = mk.get("spread_home")
+        cubre = None
+        if sp is not None:
+            linea = -sp if local else sp                 # hándicap del equipo (negativo = favorito)
+            x = (pf - pa) + linea
+            cubre = "push" if x == 0 else x > 0
+        pr = preds.get(g["game_id"]) or {}
+        resultados.append({"game_id": g["game_id"], "week": g["week"], "rival": g["away"] if local else g["home"],
+                           "local": local, "pf": pf, "pa": pa, "res": res, "cubre": cubre,
+                           "cinna": (pr.get("p_home") if local else pr.get("p_away")),
+                           "autopsia": ((db.kv_get("autopsias") or {}).get(g["game_id"]) or {}).get("veredicto")})
+    prox = next((g for g in gs if g["status"] in ("pre", "in")), None)
+    nxt = None
+    jugadores, picks_ = [], []
+    if prox:
+        nxt = _game_card(prox, preds.get(prox["game_id"]), None, ic)
+        for r in db.query("SELECT data FROM player_proj WHERE game_id=:g", g=prox["game_id"]):
+            p = db.loads(r["data"], {})
+            if p.get("team") != t:
+                continue
+            st = p.get("stats") or {}
+            main = {"QB": ["pass_yds", "pass_tds", "rush_yds"], "RB": ["rush_yds", "rush_att", "rec_yds"],
+                    "WR": ["rec_yds", "receptions"], "TE": ["rec_yds", "receptions"]}.get(p["position"], [])
+            jugadores.append({"player_id": p["player_id"], "name": p["name"], "position": p["position"],
+                              "headshot": p.get("headshot"), "availability": p.get("availability"),
+                              "snap": (p.get("role") or {}).get("snap_pct"), "p_td": (st.get("tds") or {}).get("p_any"),
+                              "stats": [{"stat": k, "label": st[k].get("label"), "med": st[k].get("med"), "q": st[k].get("q"),
+                                         "linea": st[k].get("market_line")} for k in main if st.get(k)]})
+        orden = {"QB": 0, "RB": 1, "WR": 2, "TE": 3}
+        jugadores.sort(key=lambda p: (orden.get(p["position"], 9), -(p["snap"] or 0)))
+        jugadores = [p for p in jugadores if p["position"] == "QB" or ((p["snap"] or 0) >= 0.25
+                     and sum((s["med"] or 0) for s in p["stats"]) >= 3)][:10]
+        for r in db.query("SELECT data FROM picks WHERE game_id=:g AND tier IS NOT NULL ORDER BY confidence DESC", g=prox["game_id"]):
+            d = db.loads(r["data"], {})
+            if d.get("team") == t or (d.get("type") == "game" and d.get("side") == t):
+                picks_.append(d)
+    inj = [dict(r) for r in db.query("SELECT player_id, name, position, status, p_play, comment, source FROM injuries "
+                                     "WHERE team=:t ORDER BY p_play", t=t)]
+    larga = lambda r: any(x in (r.get("status") or "") for x in ("Reserva", "IR", "PUP", "NFI"))  # noqa: E731
+    inj.sort(key=lambda r: (larga(r), r.get("p_play") or 0))     # primero los de esta semana, luego los de reserva
+    return {"team": {**meta[t], "record": f"{w}-{l_}" + (f"-{tie}" if tie else "")}, "ranks": ranks,
+            "proximo": nxt, "resultados": resultados[::-1], "jugadores": jugadores, "picks": picks_[:8],
+            "lesiones": inj, "noticias": _news(teams=[t], limit=8)}
+
+
+@app.get("/api/combinar")
+@cached(ttl=900)
+def combinar(games: str):
+    """Parlay entre varios partidos: Súper seguro / Seguro / Balanceado / Buen pago con las patas de cada uno."""
+    from brain import armados as ARM
+    from brain import draftea as DR
+    ids = [x for x in games.split(",") if x][:8]
+    if not ids:
+        raise HTTPException(400, "Elige al menos un partido")
+    return DR._no_nan(ARM.combinar(ids))
+
+
 @app.get("/api/performance")
+@cached(ttl=1800)
 def performance():
     return learning.performance()
 

@@ -114,8 +114,8 @@ def candidates_from_picks(picks: list[dict], game_status: dict[str, str]) -> lis
     """Deja una opción por (juego, jugador, stat, tipo, lado): la de mejor valor esperado."""
     best: dict[tuple, dict] = {}
     for p in picks:
-        if game_status.get(p["game_id"]) != "pre":
-            continue
+        if game_status.get(p["game_id"]) != "pre" or p.get("extra"):
+            continue            # extra = touchdowns/goles de campo/puntos alternos: se muestran, no se combinan
         if p.get("prob") is None or p["prob"] < 0.1 or p["prob"] > 0.985:
             continue
         av = (p.get("availability") or {}).get("p_play", 1.0) if p.get("type") == "player" else 1.0
@@ -311,6 +311,10 @@ def build(picks: list[dict], game_status: dict[str, str], mode: str = "segura", 
         cands = [c for c in cands if blindado(c)]
     if cfg.get("elite_only"):
         cands = [c for c in cands if c.get("elite")]
+    if mode == "mismo_partido":
+        # 2026: los del mismo partido salieron 25% cuando decían 36%; la correlación estaba bien, fallaron las
+        # Más/Menos de jugador SIN Élite (53.5% reales). Aquí sólo entran las Élite (y escalones, ganador, total…).
+        cands = [c for c in cands if not (c.get("player_id") and c.get("kind") == "ou") or c.get("elite")]
     if cfg.get("top_n"):
         # las Élite de Más/Menos de jugador más probables (antes del ajuste Élite), una por partido
         best_g: dict[str, dict] = {}

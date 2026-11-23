@@ -169,6 +169,18 @@ def max_step(dist: dict, stat: str, mu: float, target: float) -> int | None:
     return lo
 
 
+# Escalera que publica Playdoit hoy («Más de 19.5 / 29.5 / 39.5…»): el primer escalón y el paso son fijos, no dependen
+# del jugador. Visto en sus escaleras reales: 310 de yardas por recepción (294 empiezan en 20+), 137 de carrera,
+# 310 de recepciones (2+, 4+, 6+…), 52 de pase (100/125/150+ de 25 en 25).
+PD_GRID = {"rec_yds": (20, 10, 12), "rush_yds": (20, 10, 12), "qb_rush_yds": (20, 10, 8), "receptions": (2, 2, 6),
+           "pass_yds": (100, 25, 12), "pass_cmp": (15, 5, 5), "pass_att": (20, 5, 7), "pass_tds": (1, 1, 4)}
+
+
+def playdoit_grid(stat: str) -> list[int] | None:
+    g = PD_GRID.get(stat)
+    return [g[0] + k * g[1] for k in range(g[2])] if g else None
+
+
 def estimated_grid(stat: str, line: float) -> list[int]:
     """Escalones que probablemente pondrá la casa, a partir de su línea Más/Menos (patrón de Playdoit)."""
     if stat == "pass_tds":
@@ -243,11 +255,20 @@ def steps_for(p: dict, stat: str, dist: dict, pd: dict | None = None, kl: dict |
     lad_k = kl.get(f"{p['game_id']}|{p['player_id']}|{stat}")
     key = f"{p['game_id']}|{p['player_id']}|{MARKET.get(stat, stat)}"
     mu = float(e["mu"])
+    from . import lineas_casa as LC
+    mios = (LC._get(p["game_id"], p["player_id"], stat) or {}).get("escalones") or {}
     real = (pd.get("steps") or {}).get(key) or []
-    if not real and any(k.startswith(p["game_id"] + "|") for k in (pd.get("steps") or {})):
+    if not mios and not real and any(k.startswith(p["game_id"] + "|") for k in (pd.get("steps") or {})):
         return None                   # la casa ya publicó las escaleras de este partido y ésta no existe
     pasos = []
-    if real:
+    if mios:                          # lo que el usuario escaneó/pegó de su casa manda
+        fuente = "tu captura"
+        for xs, dec in sorted(mios.items(), key=lambda kv: int(kv[0])):
+            x = int(xs)
+            pr = p_step(e, stat, dist, x)
+            pasos.append({"x": x, "p": round(pr, 4), "odds": MK.dec_to_am(dec) if dec else None,
+                          "dec": round(dec, 3) if dec else est_dec(pr), "p_casa": round(1 / dec, 4) if dec else None})
+    elif real:
         fuente = "Playdoit"
         for line, odds in real:
             x = int(round(float(line) + 0.5))
@@ -260,7 +281,7 @@ def steps_for(p: dict, stat: str, dist: dict, pd: dict | None = None, kl: dict |
         if line is None:
             return None               # sin línea de la casa no se puede adivinar su escalera
         fuente = "estimado"
-        for x in estimated_grid(stat, float(line)):
+        for x in playdoit_grid(stat) or estimated_grid(stat, float(line)):
             pr = p_step(e, stat, dist, x)
             pasos.append({"x": x, "p": round(pr, 4), "odds": None, "dec": est_dec(pr), "p_casa": None})
     for s in pasos:

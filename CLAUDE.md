@@ -11,6 +11,12 @@ pregunta por partidos, jugadores, lesiones, líneas o parlays, **actúas como su
    - Semana / "qué partidos hay": `semana`.
    - **Opinión de un partido o parlays "inteligentes": empieza con `informe`** (salud de cada unidad —OL, DL,
      LB, CB, S—, bajas y quién absorbe su volumen, QBs, escenarios, Élite y ángulos con nivel de evidencia).
+   - Touchdowns del partido o de un equipo, goles de campo, pateadores, "menos/más de cuántos puntos", puntos por
+     equipo, primera mitad, margen de victoria, tiempo extra: **`mercados_partido`** (da el aproximado y, con
+     `mercado` + `linea` [+ `equipo`], la probabilidad y el momio justo de la línea exacta que vea el usuario).
+     Respeta el veredicto: touchdowns/1ª mitad/margen = fiable; goles de campo y tiempo extra = casi azar (dilo así);
+     puntos alternos = bien calibrados pero sin ventaja contra la casa.
+   - "Combina estos partidos" / súper pick entre varios partidos: **`combinar_partidos`** (equipos separados por coma).
    - Un partido: `partido` + **`escenarios`** (cómo se puede dar: el favorito domina / cerrado / sorpresa /
      tiroteo / defensivo, con probabilidad, marcador típico y qué picks suben en cada uno; medio tiempo;
      quién la puede romper; esquema de cada equipo). Luego `jugador`, `lesiones`, `noticias` si hace falta.
@@ -37,6 +43,22 @@ pregunta por partidos, jugadores, lesiones, líneas o parlays, **actúas como su
      el VE real depende del momio de su casa, así que dale el `momio_minimo`.
    - **Momio mínimo**: `evaluar` da por pata y por parlay "tómala si paga más de X" (su pago justo). Úsalo
      para que el usuario compare en su app cualquier casa mexicana sin que el cerebro lea sus momios.
+   - **Líneas de su casa** (`lineas_casa`): cuando mande captura o texto de los MERCADOS de un partido (escalones X+
+     con momio, Más/Menos), transcríbelo y guárdalo ("James Cook yds por tierra 55+ 1.25, 65+ 1.45"). Desde ahí
+     `armados`, `super_parlay` y `escalones` usan SU número y SU momio; cada captura también corrige el mínimo
+     estimado (patrón de la casa, con 5+ capturas por estadística). En la web: página Armados → "Líneas de tu casa".
+   - **Hasta dónde llega cada jugador** (`armados` → `hasta_donde`, y en la web arriba de los armados): por jugador
+     clave (QB, RB principal, 2 receptores por equipo) la escalera de la casa en 4 niveles —seguro 80%+, probable 60%+,
+     posible 35%+ y arriesgado pero posible 15%+— con el guion en que sube el número alto (domina / cerrado / remonta /
+     tiroteo / pocos puntos, de la simulación). Cuando pregunte "¿puede explotar?" o "¿hasta cuánto?", cuéntalo así.
+     El perfil **Juego grande** = ganador + esos números altos que suben juntos (arriesgado pero posible).
+     Medido (no es señal): partido DIVISIONAL no cambia al RB principal (625 casos 2022-26: acarreos 1.00 de lo proyectado,
+     100+ yds 17% vs 18%) ni los totales; "en todos lados dicen que explota" = opinión pública, no le gana a la casa.
+   - **Parlays armados** (`armados`, web /armados y pestaña Armados de cada partido): por partido Seguro (3
+     escalones verdes 70%+), Balanceado (Élite + 2 escalones) y Buen pago (Élite + 3 escalones más altos). Cuenta
+     cada pata con su `por_que` (proyección vs mínimo), `rol`, a favor / en contra y `se_cae_si`. Si un partido no
+     trae Seguro, di el aviso (p. ej. MIN #1 contra el pase deja todo en amarillo). Llevan récord real (se guardan
+     antes del kickoff y se califican solos).
 2. **Responde en español**, directo, con números: probabilidad, momio/pago, valor esperado (VE) y el porqué
    con datos concretos (rol del jugador, rival, lesiones, clima, línea vs proyección, movimiento de línea).
 3. **Honestidad con el rendimiento real** (consulta `rendimiento` si hace falta):
@@ -65,6 +87,18 @@ pregunta por partidos, jugadores, lesiones, líneas o parlays, **actúas como su
      línea de cierre acertó ~51%. Lo validado en partidos: CB titular fuera (+1 pt al rival) y duda de QB.
    - Retroalimentación: cada tipo de Élite (estadística × lado) lleva su récord (`rendimiento` →
      elite_por_categoria); si uno cae de 53.5% con muestra suficiente deja de etiquetarse Élite solo.
+   - **Clima / lluvia** (desde 12/11/2026): el clima se confirma con hasta 6 fuentes (Open-Meteo, GFS, ECMWF, el
+     Servicio Meteorológico de EE.UU. y, a <3 h del kickoff, la estación del aeropuerto y la lectura de "ahora").
+     `weather.lluvia` trae el veredicto ("lluvia" si 2+ coinciden) y sale en `partido`/`informe` → dilo. Medido
+     2022-26 (843 partidos al aire libre, lluvia REAL 2+ mm): total −3.9 pts vs la línea de cierre (Menos 64%) y
+     yardas de pase/recepción −6%, 4 de 5 temporadas; acarreos +2% y yardas por tierra sin efecto claro. Cinna
+     aplica la MITAD (−1 pt por equipo, ×0.97 yds de pase y de recepción WR/TE) sólo con lluvia fuerte confirmada.
+     "Con lluvia corre más" casi no se sostiene: no lo uses para un Más de acarreos.
+   - Medido 09/11/2026 (NO usar como señal): el "colchón" (cuánto le sobra a la proyección sobre el escalón) no
+     predice nada más allá de la probabilidad (30 mil escalones 2024-26, fuera de muestra). Cuando REGRESA un
+     compañero RB (15%+ de acarreos), el que lo suplía sacó ~9% menos de lo proyectado, pero sólo 3 de 4 temporadas
+     (110 casos): sale como "en contra", no mueve la probabilidad. Los parlays de 2026 salen más de lo dicho (65% vs
+     48% en 71 de 2 patas) pero vienen de 18 patas Top Élite: muestra chica, no se recalibra.
 4. **Opina como un analista de verdad** (con `informe`): primero la lectura (quién es favorito y por qué),
    luego lo que cambia el partido esta semana (bajas por unidad, quién hereda el volumen, QB), después el guion
    probable y el alternativo, y al final los ángulos. Clasifica cada afirmación por su evidencia:
@@ -148,12 +182,43 @@ pregunta por partidos, jugadores, lesiones, líneas o parlays, **actúas como su
 
 ## Notas técnicas (sólo si piden cambios al programa)
 - API FastAPI en `api/` (puerto 8765), motor en `brain/`, interfaz Next.js en `web/` (puerto 3100),
-  conector MCP en `asistente/mcp_server.py`. Arranque: `iniciar.bat`.
+  conector MCP en `asistente/mcp_server.py`. Arranque: `iniciar.bat`. Arranca sola al iniciar sesión (acceso directo
+  en la carpeta Inicio de Windows → `iniciar_oculto.vbs /arranque`, sin abrir el navegador) y, con partidos a menos
+  de 3 h o en juego, la API evita que Windows se duerma (`_no_dormir`, no impide apagarla). Los .bat/.cmd/.vbs
+  deben tener saltos CRLF (con LF `cmd` se come letras y no recompila la web).
+- Disponibilidad (`brain/availability.py`): Sleeper se cruza por `sleeper_id` del roster (antes sólo 145 de 606
+  jugadores cruzaban); un jugador "RES" en nflverse pero activo y sin lesión en Sleeper cuenta como activado (85%).
+- Parlays armados en `brain/armados.py`, líneas de la casa en `brain/lineas_casa.py` (kv `lineas_casa`).
 - Diseño: Fredoka (títulos) + Nunito (cuerpo), tema «Crema» por defecto y «Chocolate» oscuro; tokens en
   `web/app/globals.css` (usa `text-on-accent`/`text-on-brand` sobre botones, no `text-white`), marca y mascota en
   `web/components/brand.tsx`, encabezados con `PageHeader`. Claves JSON con «cerebro» se quedan como están.
 - Menú lateral en `web/components/shell.tsx` (datos de `/api/menu`), íconos con `<Duo icon={…} tone=…>`/`<IconTile>` (`components/icons.tsx`,
   Phosphor duotono + tonos en globals.css). **El usuario NO quiere emojis como íconos**, videos con `VideoProvider`/`VideoCard`/`VideoRail` (`components/videos.tsx`) y
   `/api/videos`, `/api/partido/{id}/jugadas` (`brain/ingest/videos.py`). Videos = sólo para ver, nunca al modelo.
+- Respuestas pesadas con `@cached` (api/main.py) por versión de datos: si agregas un POST que cambie datos que
+  muestran esas pantallas, llama `_bump()`. Escáner de capturas: `brain/escaner.py` (RapidOCR local).
+- Mercados del partido (touchdowns, goles de campo, puntos alternos, pateadores, 1ª mitad, margen, tiempo extra):
+  `brain/anotaciones.py` (probabilidades = simulador mezclado con la liga según `data/models/anotaciones_calib.json`, que
+  escribe `scripts/validar_anotaciones.py` y se rehace en `learning.weekly`), `/api/mercados/{id}` y `/calc`, pestaña en
+  `web/components/mercados.tsx`. Sus picks llevan `extra: true` y `kind: "mercado"`: se muestran y se califican
+  (`AN.reales_espn` / `AN.resultado`), pero **no entran a parlays, plan ni armados**. Si agregas un mercado, valídalo
+  primero con el script y no le pongas nivel si sale «casi azar».
+- Armados (`brain/armados.py`): perfiles seguro/partido/menos/guion/balanceado/buen_pago; candidatas por partido en
+  memoria (`_CACHE`, se rehace con cada actualización); `combinar()` para varios partidos (programación dinámica por
+  nivel de pago). Patas del partido: `AN.patas_partido`; su calificación: `AN.resultado_pata`. La simulación conjunta
+  (`brain/models/joint.py`) guarda `home/away_td_all` y `home/away_fg_all`. UI compartida de parlays en
+  `web/components/patas.tsx` (ParlayCard, PataFila); ficha de equipo en `web/app/equipos/[abbr]` con `/api/equipo/{abbr}`.
+- Conectar Playdoit: extensión en `extension/` (escucha.js en el mundo de la página, puente.js, fondo.js). Sólo copia
+  respuestas que el navegador del usuario ya recibió; NUNCA hacer que pida datos por su cuenta (sería rodear el
+  bloqueo). Backend: `PDO.capturar`, `PDO._events_capturados`, `/api/playdoit/captura`, `/api/playdoit/estado`.
+- «Enviar a Cinna» (`brain/importar.py`, `/importar`, `POST /api/importar_casa`): el usuario manda el texto de la página
+  del partido desde un marcador de su navegador; lo leído va a kv `casa_partido` y manda sobre todo lo demás
+  (`AN.casa_de`). Si un formato no se reconoce, revisa `data/raw/importar_ultimo.json` y ajusta `leer_partido`.
+- Mercados del partido: sólo líneas del menú de la casa (`AN.menu_casa`, patrón de Playdoit medido en 60 eventos) o las
+  de Playdoit en vivo; nunca líneas que la casa no publica (el usuario lo pidió: «que sean realistas»).
+- Playdoit bloquea las consultas automáticas (403 de Cloudflare). **No se rodea el bloqueo** (nada de imitar un
+  navegador): `brain/ingest/playdoit.py` pausa 6 h tras un 403 (`data/raw/pd_pausa.json`). El usuario mete sus líneas
+  con la calculadora de Mercados, el escáner o `lineas_casa`.
+- El aviso rojo de hidratación con `bis_skin_checked` viene de la extensión de Bitdefender del navegador, no de la app.
 - Repositorio público en GitHub: https://github.com/DarioRafael/CinnaParleys (rama `main`). Haz commit/push
   **sólo cuando el usuario lo pida**. Nunca subas `data/` (salvo `data/models/`), `.mcp.json` ni registros.

@@ -6,7 +6,7 @@ noticias/insiders más recientes. Las probabilidades base salen de datos reales 
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from .config import TIER_LABEL
 from .util import get_logger, iso, now_utc, parse_dt
@@ -24,6 +24,10 @@ ESPN_STATUS = {"Out": 0.0, "Injured Reserve": 0.0, "Doubtful": 0.02, "Questionab
 SLEEPER_STATUS = {"Out": 0.0, "IR": 0.0, "PUP": 0.0, "Sus": 0.0, "Doubtful": 0.02, "Questionable": 0.65,
                   "NA": 0.0, "DNR": 0.0, "COV": 0.0}
 LABEL = {0.0: "Fuera", 0.02: "Dudoso"}
+TEAM_FIX = {"LAR": "LA", "JAC": "JAX", "WSH": "WAS", "OAK": "LV", "SD": "LAC"}
+# en reserva para nflverse pero activo y sin lesión en Sleeper: casi siempre ya lo activaron; no 100% porque a veces
+# Sleeper se adelanta a un "designado para regresar" que todavía no sube al roster
+ACTIVADO_P = 0.85
 
 
 def _practice(s: str | None) -> str | None:
@@ -73,6 +77,13 @@ def compute(roster: list[dict], espn_inj: list[dict], nfl_inj: list[dict], sleep
             sl_by_gsis[str(p["gsis_id"]).strip()] = p
         if p.get("espn_id"):
             sl_by_espn[str(p["espn_id"])] = p
+
+    def _sleeper_de(pl: dict) -> dict | None:
+        # Sleeper casi nunca trae gsis_id/espn_id (sólo 145 de 606 cruzaban así): la llave buena es su propio id,
+        # que viene en el roster de nflverse (592 de 606).
+        sid = str(pl.get("sleeper_id") or "").replace(".0", "").strip()
+        return (sleeper.get(sid) if sid else None) or sl_by_gsis.get(pl["player_id"]) or (
+            sl_by_espn.get(str(pl.get("espn_id"))) if pl.get("espn_id") else None)
     ev_by_player: dict[str, list] = {}
     for n in news_rows:
         for e in n.get("events") or []:
@@ -88,9 +99,20 @@ def compute(roster: list[dict], espn_inj: list[dict], nfl_inj: list[dict], sleep
         window_start = (ko - timedelta(days=6)) if ko else now - timedelta(days=5)
         news_starter = False
 
+        sp = _sleeper_de(pl)
+        activado = False
         if pl.get("roster_status") in ("RES", "SUS"):
-            p, label, src = 0.0, "Reserva (IR/PUP/NFI)", "Roster oficial"
-            hist.append({"src": "Roster oficial", "tier": 1, "text": "En lista de reserva", "p": 0.0})
+            # el roster semanal de nflverse llega tarde: un jugador activado de la reserva el fin de semana seguía
+            # en "RES" y Cinna lo dejaba fuera (Jadarian Price, SEA, semana 8 de 2026). Sleeper lo marca antes.
+            sl_team = TEAM_FIX.get((sp or {}).get("team"), (sp or {}).get("team"))
+            if sp and sp.get("status") == "Active" and not sp.get("injury_status") and sl_team == pl["team"]:
+                activado = True
+                p = ACTIVADO_P          # sin fuente fija: si ESPN o el reporte oficial dicen algo más nuevo, mandan ellos
+                comment = "Activado de la reserva según Sleeper (el roster oficial aún no lo refleja)"
+                hist.append({"src": "Sleeper", "tier": 2, "text": comment, "p": ACTIVADO_P})
+            else:
+                p, label, src = 0.0, "Reserva (IR/PUP/NFI)", "Roster oficial"
+                hist.append({"src": "Roster oficial", "tier": 1, "text": "En lista de reserva", "p": 0.0})
 
         nf = by_gsis_nfl.get(pid)
         p_nfl = None
@@ -118,12 +140,14 @@ def compute(roster: list[dict], espn_inj: list[dict], nfl_inj: list[dict], sleep
                 comment = ei.get("short") or comment
             elif p_nfl is not None:
                 p, src = p_nfl, "Reporte oficial NFL"
-            elif p_espn is not None and p_espn < 1.0:
+            elif p_espn is not None and p_espn < 1.0 and not activado:   # su "IR" viejo de ESPN ya no aplica
                 p, src, base_t = p_espn, "ESPN", t_espn
                 comment = ei.get("short") or comment
         if src is None:
-            sp = sl_by_gsis.get(pid) or (sl_by_espn.get(str(pl.get("espn_id"))) if pl.get("espn_id") else None)
-            if sp and sp.get("injury_status") in SLEEPER_STATUS:
+            # Sleeper deja el "Out" puesto hasta que alguien lo quita: sólo cuenta si su nota es de esta semana
+            sl_t = (datetime.fromtimestamp(sp["news_updated"] / 1000, tz=timezone.utc)
+                    if sp and isinstance(sp.get("news_updated"), (int, float)) else None)
+            if sp and sp.get("injury_status") in SLEEPER_STATUS and (sl_t is None or sl_t >= window_start):
                 pp = SLEEPER_STATUS[sp["injury_status"]]
                 prac = _practice(sp.get("practice_participation"))
                 if sp["injury_status"] == "Questionable" and prac:
@@ -132,6 +156,8 @@ def compute(roster: list[dict], espn_inj: list[dict], nfl_inj: list[dict], sleep
                 comment = f"{sp['injury_status']} ({sp.get('injury_body_part') or 'lesión'})"
                 hist.append({"src": "Sleeper", "tier": 2, "text": comment, "p": pp})
 
+        if activado and src is None:
+            src = "Sleeper"
         official = src in ("ESPN", "Reporte oficial NFL", "Roster oficial")
         for n, e in sorted(ev_by_player.get(pid, []), key=lambda x: x[0].get("published_at") or ""):
             d = parse_dt(n.get("published_at"))
@@ -170,7 +196,7 @@ def compute(roster: list[dict], espn_inj: list[dict], nfl_inj: list[dict], sleep
         out[pid] = {"player_id": pid, "name": pl["name"], "team": pl["team"], "position": pl["position"],
                     "p_play": round(p, 3), "snap_mult": round(snap, 3), "status": label or status_label(p),
                     "source": src, "comment": comment, "updated": iso(base_t) if base_t else None,
-                    "news_starter": news_starter, "history": hist[-6:]}
+                    "news_starter": news_starter, "activado": activado, "history": hist[-6:]}
     return out
 
 

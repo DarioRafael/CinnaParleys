@@ -41,6 +41,15 @@ actualizan cada hora. Responde en español, claro y directo.
   Playdoit bloqueado), dilo PRIMERO con lo que afecta.
 - `evaluar` da el "momio_minimo" de cada pata y del parlay: con eso el usuario compara en Playdoit/Caliente/Draftea.
 - Para "hazme parlays" usa `parlays_con_guion`: explica cada uno como historia ("pasa porque…, se cae si…").
+- Para "parlays ya armados" o "qué meto en el partido X": `armados` (Seguro / Balanceado / Buen pago por partido, con
+  el porqué de cada pata: cuánto le sobra a la proyección sobre su mínimo, rol, a favor, en contra y "se cae si").
+- Si el usuario manda captura o texto de los MERCADOS de su casa (escalones X+ con momio, Más/Menos), transcríbelo y
+  guárdalo con `lineas_casa`: desde ahí todo usa sus números y momios reales (Playdoit bloquea a Cinna).
+- Para touchdowns del partido o de un equipo, goles de campo, pateadores, "menos/más de cuántos puntos", puntos por
+  equipo, primera mitad, margen de victoria o tiempo extra: `mercados_partido`. Da el aproximado (cuánto se espera y
+  el rango normal) y la probabilidad de CUALQUIER línea (pásala en `linea`). Respeta su veredicto: touchdowns, 1ª mitad
+  y margen son fiables; los goles de campo son casi azar (dilo así, no inventes ventaja); los puntos alternos están bien
+  calibrados pero no le ganan a la casa: sirven para saber qué tan seguro es un escalón.
 - Nunca digas "no es probable" a secas: da la probabilidad (p. ej. "100+ yds: 18%") y en qué escenario sí pasa
   (p. ej. "si Coker no juega y CAR va abajo"). Si una pata depende de un compañero en duda, dilo y sugiere
   esperar los inactivos (90 min antes)."""
@@ -121,7 +130,7 @@ def _ensure_api() -> None:
     """Si la API de Cinna no está prendida, la enciende (sin ventana) y espera a que responda."""
     if _api_up():
         return
-    py = ROOT / ".venv" / "Scripts" / "python.exe"
+    py = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     if not py.exists():
         py = Path(sys.executable)
     log = open(ROOT / "data" / "api_asistente.log", "a", encoding="utf-8")
@@ -144,7 +153,7 @@ def _ensure_api() -> None:
         time.sleep(1)
         if _api_up():
             return
-    raise RuntimeError("No pude encender la API de CinnaParleys. Abre iniciar.bat en la carpeta Cerebro_NFL.")
+    raise RuntimeError("No pude encender la API de CinnaParleys. Ábrela con iniciar.bat (Windows) o ./iniciar.sh (Linux).")
 
 
 def _get(path: str, **params):
@@ -161,28 +170,34 @@ def _post(path: str, body: dict):
     return r.json()
 
 
-_FU_CACHE: dict = {"t": 0.0, "avisos": None}
+_FU_CACHE: dict = {"t": 0.0, "avisos": None, "datos": None}
 
 
 def _avisos_fuentes() -> list | None:
-    """Fuentes caídas (p. ej. Playdoit bloqueado): se cachea 1 minuto."""
+    """Fuentes caídas (p. ej. Playdoit bloqueado) y datos viejos: se cachea 1 minuto."""
     if time.time() - _FU_CACHE["t"] > 60:
         try:
-            _FU_CACHE["avisos"] = ((_get("/api/status").get("fuentes") or {}).get("avisos")) or None
+            st = _get("/api/status")
+            _FU_CACHE["avisos"] = ((st.get("fuentes") or {}).get("avisos")) or None
+            _FU_CACHE["datos"] = (st.get("frescura") or {}).get("aviso")
         except Exception:  # noqa: BLE001
-            _FU_CACHE["avisos"] = None
+            _FU_CACHE["avisos"] = _FU_CACHE["datos"] = None
         _FU_CACHE["t"] = time.time()
     return _FU_CACHE["avisos"]
 
 
 def _con_avisos(fn):
-    """Antepone AVISO_FUENTES a la respuesta si alguna fuente clave está caída (el asistente lo dice primero)."""
+    """Antepone AVISO_DATOS (datos viejos con partido cerca) y AVISO_FUENTES (fuente clave caída) a la respuesta:
+    el asistente los dice primero."""
     @functools.wraps(fn)
     def wrap(*a, **k):
         out = fn(*a, **k)
         av = _avisos_fuentes()
-        if av and isinstance(out, dict):
-            out = {"AVISO_FUENTES": av, **out}
+        if isinstance(out, dict):
+            if av:
+                out = {"AVISO_FUENTES": av, **out}
+            if _FU_CACHE["datos"] and not out.get("AVISO_DATOS"):
+                out = {"AVISO_DATOS": _FU_CACHE["datos"], **out}
         return out
     return wrap
 
@@ -345,6 +360,7 @@ def partido(equipo_o_partido: str, jugadores_por_equipo: int = 5) -> dict:
         "id": g["game_id"], "cuando": _hora(g["kickoff"]), "estadio": g.get("venue"), "tv": g.get("broadcast"),
         "clima": (g.get("weather") or {}).get("label") and
                  f"{g['weather'].get('label')}, {_r(g['weather'].get('temp_f'), 0)}°F, viento {_r(g['weather'].get('wind_mph'), 0)} mph"
+                 + (f" · {g['weather']['lluvia']['texto']}" if (g['weather'].get('lluvia') or {}).get('texto') else "")
                  if not g.get("indoor") else "Techado",
         "cerebro": {
             "prob_ganar": {H: _pct(pr.get("p_home")), A: _pct(pr.get("p_away"))},
@@ -472,6 +488,89 @@ def escenarios(equipo_o_partido: str) -> dict:
         "esquema": {"nota": sq.get("nota"), "equipos": sq.get("equipos"),
                     "matchups": [f"{x['jugador']} ({x['equipo']}): " + " / ".join(x["notas"]) for x in sq.get("matchups") or []]},
     })
+
+
+_CLAVES_MERCADO = {
+    "puntos": "pts_total", "total": "pts_total", "puntos_local": "pts_home", "puntos_visita": "pts_away",
+    "touchdowns": "td_total", "td": "td_total", "td_local": "td_home", "td_visita": "td_away",
+    "goles_de_campo": "fg_total", "fg": "fg_total", "fg_local": "fg_home", "fg_visita": "fg_away",
+    "pateador_local": "k_pts_home", "pateador_visita": "k_pts_away", "primera_mitad": "h1_total", "1h": "h1_total"}
+
+
+@server.tool()
+@_con_avisos
+def mercados_partido(equipo_o_partido: str, mercado: str = "", linea: float = 0, equipo: str = "") -> dict:
+    """MERCADOS DEL PARTIDO que no son de jugador: puntos (cualquier línea: "menos de 51.5"), puntos por equipo,
+    TOUCHDOWNS (del partido y por equipo), GOLES DE CAMPO, PATEADORES (puntos de patada), PRIMERA MITAD (quién va
+    ganando y puntos), MARGEN DE VICTORIA y TIEMPO EXTRA. De cada uno: el aproximado (media, lo más probable y rango
+    normal 10%–90%), la probabilidad de las líneas típicas, los escalones seguros ("menos de X" al 70/80/85/90%) y el
+    veredicto de la validación con 2,068 partidos (fiable / aceptable / igual que la casa / casi azar).
+
+    Para UNA línea concreta que el usuario ve en su casa: pasa `mercado` (puntos, touchdowns, goles_de_campo,
+    pateador, primera_mitad), `linea` (p. ej. 4.5) y, si es de un equipo, `equipo` (abreviatura o nombre). Devuelve la
+    probabilidad de Más y de Menos y el momio justo: si la casa paga mejor que el justo, hay valor."""
+    g0 = _find_game(equipo_o_partido)
+    if not g0:
+        return {"error": f"No encontré un partido próximo para '{equipo_o_partido}'."}
+    d = _get(f"/api/mercados/{g0['game_id']}")
+    m = d.get("mercados")
+    if not m:
+        return {"error": "Este partido aún no tiene simulación; usa `actualizar` y vuelve a intentar."}
+    H, A = d["home"], d["away"]
+    out = {"partido": f"{A} @ {H}", "validado_con_partidos": m.get("partidos_validacion"),
+           "momios_de_la_casa": "sí (Playdoit)" if m.get("con_momios") else
+           "no: Playdoit no deja leer sus momios; compara lo que te pagan contra el momio justo"}
+    if mercado and linea:
+        k = _norm(mercado).replace(" ", "_")
+        t = _team_code(equipo) if equipo else None
+        lado = "home" if t == H else "away" if t == A else None
+        base = "pts" if k.startswith(("punto", "total")) else "td" if k.startswith(("touchdown", "td", "anotacion")) else \
+            "fg" if k.startswith(("gol", "fg", "field")) else "k_pts" if k.startswith(("patea", "kicker", "patada")) else \
+            "h1" if k.startswith(("primera", "1", "mitad", "medio")) else None
+        if base == "h1":
+            clave = "h1_total"
+        elif base and lado:                      # el equipo manda: «goles de campo» + equipo = los de ese equipo
+            clave = f"{base}_{lado}"
+        else:
+            clave = _CLAVES_MERCADO.get(k) or (f"{base}_total" if base else None)
+        if base == "k_pts" and not lado:
+            return {"error": "Para el pateador dime de qué equipo (parámetro equipo)."}
+        if not clave:
+            return {"error": "Mercado no reconocido. Usa: puntos, touchdowns, goles_de_campo, pateador o primera_mitad."}
+        try:
+            c = _get(f"/api/mercados/{g0['game_id']}/calc", clave=clave, linea=linea)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"No pude calcular esa línea: {e}"}
+        out["linea"] = {"mercado": c["titulo"], "linea": c["linea"], "prob_mas": _pct(c["p_mas"]), "prob_menos": _pct(c["p_menos"]),
+                        "prob_exacto": _pct(c["p_exacto"]) if (c.get("p_exacto") or 0) >= 0.001 else None,
+                        "momio_justo_mas": _am(c["justo_mas"]), "momio_justo_menos": _am(c["justo_menos"]),
+                        "cinna_espera": c["aprox"], "veredicto": c["veredicto"], "nota": c["nota"]}
+        return _no_nan(out)
+    grupos = []
+    for grp in m["grupos"]:
+        ms = []
+        for mk in grp["mercados"]:
+            e = {"mercado": mk["titulo"], "veredicto": mk["veredicto"]}
+            if mk.get("aprox"):
+                a = mk["aprox"]
+                e["cinna_espera"] = f"~{a['media']} (lo normal: de {a['p10']:g} a {a['p90']:g})"
+            if mk.get("lineas"):
+                e["lineas"] = [f"{ln['linea']:g}: Más {_pct(ln['p_mas'])}"
+                               + (f" ({_am(ln['momio_mas'])})" if ln.get("momio_mas") is not None else "")
+                               + f" · Menos {_pct(ln['p_menos'])}"
+                               + (f" ({_am(ln['momio_menos'])})" if ln.get("momio_menos") is not None else "")
+                               for ln in mk["lineas"]]
+            if mk.get("seguros"):
+                e["escalones_seguros"] = {
+                    "menos_de": [f"{x['linea']:g} ({_pct(x['p'])})" for x in mk["seguros"]["menos"]],
+                    "mas_de": [f"{x['linea']:g} ({_pct(x['p'])})" for x in mk["seguros"]["mas"]]}
+            if mk.get("opciones"):
+                e["opciones"] = [f"{o['nombre']}: {_pct(o['p'])}" + (f" ({_am(o['momio'])})" if o.get("momio") is not None else "")
+                                 for o in mk["opciones"]]
+            ms.append(e)
+        grupos.append({"grupo": grp["grupo"], "nota": grp["mercados"][0].get("nota"), "mercados": ms})
+    out["grupos"] = grupos
+    return _no_nan(out)
 
 
 @server.tool()
@@ -955,6 +1054,95 @@ def mis_apuestas() -> dict:
     """Récord de las apuestas REALES del usuario: cuánto apostó y cobró, aciertos por tipo de pata (y lo que decía el
     Cinna), lo que más lo tumba, las pendientes. Úsalo cuando pregunte "¿cómo voy?" o "¿qué tal me fue?"."""
     return _no_nan(_get("/api/mis_apuestas"))
+
+
+@server.tool()
+@_con_avisos
+def armados(partido: str = "") -> dict:
+    """PARLAYS ARMADOS POR PARTIDO (úsalo cuando pida "parlays ya armados", "qué meto en el partido X" o "ármame algo
+    de cada partido"): por partido, hasta seis opciones —Seguro, Del partido (ganador o ventaja, puntos, touchdowns y
+    goles de campo), Partido cerrado (con «Menos»), Si gana el favorito, Balanceado (Élite de ancla) y Buen pago— con
+    probabilidad conjunta
+    (simulación del partido), pago estimado y, por cada pata, POR QUÉ saca más de su mínimo: cuánto le sobra a la
+    proyección, su rol, a favor / en contra (rival, Kalshi, guion, salud) y en qué caso se cae. Cuéntalas así:
+    "Jacobs 10+ acarreos (86%): proyecta 14.8, le sobran 4.8; es el RB principal con 45% de los acarreos; se cae si
+    GB va abajo por mucho". Si un partido no trae Seguro, di el aviso (por qué). Las patas con mínimo [estimado] hay
+    que confirmarlas en su app (o que te mande captura de los mercados → `lineas_casa`). Trae su RÉCORD real.
+    HASTA_DONDE: por jugador clave, la escalera de su casa en 4 niveles —seguro (80%+), probable (60%+), posible
+    (35%+) y arriesgado pero posible (15%+)— y en qué guion sube el número alto ("sube a 52% si DAL domina").
+    Cuéntala así cuando pregunte "¿puede explotar X?" o "¿hasta cuánto llega?": lo seguro, lo realista y el techo
+    con su guion. "Juego grande" = el parlay arriesgado pero posible de ese guion.
+    partido: equipo o id para uno solo; vacío = toda la jornada."""
+    gid = ""
+    if partido:
+        code = _team_code(partido.split("@")[-1].split(" vs ")[-1].strip()) or _team_code(partido)
+        wk = _get("/api/week")
+        gid = next((g["game_id"] for g in wk.get("games") or [] if code and code in (g["home"]["abbr"], g["away"]["abbr"])
+                    and g["status"] == "pre"), partido if partido.count("_") >= 3 else "")
+    d = _get("/api/armados", **({"game_id": gid} if gid else {}))
+    out = []
+    for part in d.get("partidos") or []:
+        ps = []
+        for pz in part.get("parlays") or []:
+            ps.append(_no_nan({
+                "perfil": pz["label"],
+                "resumen": f"sale {_pct(pz['prob_conjunta'])} · paga ~{pz['pago_estimado']}x"
+                           + ("" if pz.get("precios_reales") else " (pago estimado con el patrón de la casa)")
+                           + f" · tómalo si paga más de {pz['pago_justo']}x",
+                "patas": [_no_nan({"pata": f"{l['titulo']} — {_pct(l['prob'])}"
+                                           + (f" [Kalshi {_pct(l['p_kalshi'])}]" if l.get("p_kalshi") is not None else "")
+                                           + (f" [mínimo {l['fuente_minimo']}]" if l.get("fuente_minimo") in ("estimado",) else ""),
+                                   "por_que": l.get("porque"), "rol": l.get("rol"), "a_favor": l.get("a_favor") or None,
+                                   "en_contra": l.get("en_contra") or None, "se_cae_si": l.get("se_cae_si") or None})
+                          for l in pz["patas"]]}))
+        out.append(_no_nan({"partido": part["partido"], "kickoff": part.get("kickoff"), "parlays": ps,
+                            "hasta_donde": [e["lectura"] for e in part.get("hasta_donde") or []] or None,
+                            "avisos": part.get("avisos") or None, "plan_de_juego": part.get("plan"),
+                            "descartadas": [f"{x['titulo']} ({_pct(x['prob'])}): " + "; ".join(x["por_que"])
+                                            for x in part.get("descartadas") or []][:4] or None}))
+    return _no_nan({"AVISO_DATOS": (d.get("frescura") or {}).get("aviso"), "partidos": out,
+                    "record_real": d.get("record") or "todavía sin parlays armados calificados", "nota": d.get("nota")})
+
+
+@server.tool()
+@_con_avisos
+def combinar_partidos(partidos: str) -> dict:
+    """SÚPER PICK ENTRE VARIOS PARTIDOS: el usuario elige 2+ partidos ("combina Giants, Lions y Chiefs") y le das las
+    opciones Súper seguro (una pata por partido, 82-93%), Seguro (lo más probable que paga 2x+), Balanceado (3.5x+) y
+    Buen pago (5x+), con 1-2 patas por partido (jugadores y mercados del partido). La probabilidad de cada partido sale
+    de su simulación; entre partidos son independientes. partidos: equipos separados por coma."""
+    ids = []
+    for q in [x.strip() for x in partidos.replace(" y ", ",").split(",") if x.strip()]:
+        g = _find_game(q)
+        if g and g["game_id"] not in ids:
+            ids.append(g["game_id"])
+    if not ids:
+        return {"error": f"No encontré partidos próximos para '{partidos}'."}
+    d = _get("/api/combinar", games=",".join(ids))
+    if d.get("error"):
+        return {"error": d["error"]}
+    return _no_nan({"partidos": d.get("partidos"), "avisos": d.get("avisos") or None, "nota": d.get("nota"),
+                    "opciones": [{"opcion": o["label"], "que_es": o["desc"],
+                                  "resumen": f"sale {_pct(o['prob_conjunta'])} · paga ~{o['pago_estimado']}x (estimado) · "
+                                             f"vale la pena si paga más de {o['pago_justo']}x",
+                                  "patas": [f"{l['titulo']} ({l.get('partido') or ''}) — {_pct(l['prob'])}" for l in o["patas"]]}
+                                 for o in d.get("opciones") or []]})
+
+
+@server.tool()
+def lineas_casa(texto: str, casa: str = "Playdoit") -> dict:
+    """GUARDA LAS LÍNEAS REALES DE SU CASA (Playdoit bloquea a Cinna; úsalo SIEMPRE que el usuario mande captura o
+    texto de los MERCADOS de un partido —escalones X+ con momio o Más/Menos—). Pásalo como texto, un renglón por
+    mercado, con el jugador y la estadística: "James Cook yds por tierra 55+ 1.25, 65+ 1.45, 75+ 1.80" o
+    "Hockenson recepciones Más de 4.5 1.95 Menos de 4.5 1.80" (momio decimal o americano). Si te manda una captura,
+    léela tú y transcríbela así. Desde ahí, `armados`, `super_parlay` y `escalones` usan SUS números y SUS momios.
+    Devuelve lo guardado y qué tanto se equivocaba el patrón estimado de esa casa."""
+    d = _post("/api/lineas-casa/texto", {"texto": texto, "casa": casa})
+    try:
+        d["patron_estimado_vs_real"] = _get("/api/lineas-casa").get("patron") or None
+    except Exception:  # noqa: BLE001
+        pass
+    return _no_nan(d)
 
 
 @server.tool()

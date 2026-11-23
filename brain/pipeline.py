@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
+from . import anotaciones as AN
 from . import availability as AV
 from . import market as MK
 from . import meta as ME
@@ -173,6 +174,12 @@ def _refresh_once(scope: str = "quick") -> dict:
             SPL.grade()
         except Exception as e:  # noqa: BLE001
             log.warning("plan de la semana: %s", e)
+        try:                        # parlays armados por partido: se guarda la última versión antes del kickoff
+            from . import armados as ARM
+            ARM.snapshot()
+            ARM.grade()
+        except Exception as e:  # noqa: BLE001
+            log.warning("parlays armados: %s", e)
         db.kv_set("last_refresh", {"at": iso(now_utc()), "scope": scope, "secs": round(time.time() - t0, 1), **res})
         db.insert_rows(db.jobs, [{"name": f"refresh_{scope}", "started_at": job_start, "finished_at": iso(now_utc()),
                                   "status": "ok", "message": str(res)[:500]}])
@@ -305,6 +312,8 @@ def _refresh_core() -> dict:
         pl_ = pd_lines.get((g["away"], g["home"]))
         if pl_ and pl_.get("game"):
             g.setdefault("books", {})["Playdoit"] = pl_["game"]
+        if pl_ and pl_.get("mercados"):
+            g["pd_mercados"] = pl_["mercados"]   # puntos alternos, touchdowns, goles de campo, 1ª mitad, margen…
     tm = team_meta()
     db.upsert(db.games, [{
         "game_id": g["game_id"], "season": g["season"], "week": g["week"], "game_type": g["game_type"],
@@ -391,14 +400,16 @@ def _refresh_core() -> dict:
     # escalones X+ reales de Playdoit (≈ los de Draftea): {gid|pid|stat: [[línea, momio], ...]}
     pd_lad: dict[str, list] = {}
     pd_ou: dict[str, float] = {}
+    pd_ou_m: dict[str, dict] = {}                 # momios de esa Más/Menos en Playdoit
     for (gid_, pid_, st_), mm in mindex.items():
         steps_ = sorted({(float(o["line"]), o["over"]) for o in mm["alt"] if o["book"] == "Playdoit" and o.get("over") is not None})
         if steps_:
             pd_lad[f"{gid_}|{pid_}|{st_}"] = [list(x) for x in steps_]
-        ou_ = next((o["line"] for o in mm["ou"] if o["book"] == "Playdoit"), None)
-        if ou_ is not None:
-            pd_ou[f"{gid_}|{pid_}|{st_}"] = float(ou_)
-    db.kv_set("pd_ladders", {"steps": pd_lad, "ou": pd_ou})
+        ou_ = next((o for o in mm["ou"] if o["book"] == "Playdoit"), None)
+        if ou_ is not None and ou_.get("line") is not None:
+            pd_ou[f"{gid_}|{pid_}|{st_}"] = float(ou_["line"])
+            pd_ou_m[f"{gid_}|{pid_}|{st_}"] = {"over": ou_.get("over"), "under": ou_.get("under")}
+    db.kv_set("pd_ladders", {"steps": pd_lad, "ou": pd_ou, "ou_momios": pd_ou_m})
     try:        # escaleras de Kalshi (mercado regulado, gratis): probabilidad de mercado para CADA escalón X+
         from .ingest import kalshi as KA
         kal_steps = KA.current()
@@ -520,6 +531,7 @@ def _refresh_core() -> dict:
     notes: dict = {}
     try:        # corredor principal cuando falta su compañero (validado 2022-2025) + patas que dependen de alguien en duda
         log.info("RB con volumen liberado: %s", _vacated_rb_adjust(fut_all, frows, preds, avail, p_off, notes))
+        log.info("ajuste por lluvia: %s proyecciones", _rain_adjust(frows, preds, game_rows, notes))
         _dependencies(fut_all, frows, avail, notes)
         bajas: dict = {}
         for col_, thr_, key_ in (("u_tgt_share", 0.12, "targets"), ("u_car_share", 0.15, "acarreos")):
@@ -595,6 +607,8 @@ def _refresh_core() -> dict:
             ur_ = {g["home"]: unit_rep.get((g["week"], g["home"])), g["away"]: unit_rep.get((g["week"], g["away"]))}
             adj_h, adj_a, unotes = UN.game_adjust(ur_, g["home"], g["away"]) if unit_rep else (0.0, 0.0, [])
             fh, fa = fh + adj_h, fa + adj_a
+            if not g.get("indoor") and weather.lluvia_fuerte(g.get("weather")):
+                fh, fa = fh - LLUVIA_PTS, fa - LLUVIA_PTS
             th, ta, drv = GM.sim_inputs(live_tg.loc[(gid, g["home"])], live_tg.loc[(gid, g["away"])], fh, fa, league)
             unc = {g["home"]: _qb_uncertainty(starters.get(g["home"]), qb_starts),
                    g["away"]: _qb_uncertainty(starters.get(g["away"]), qb_starts)}
@@ -631,8 +645,18 @@ def _refresh_core() -> dict:
                 summ_g["caminos"] = LE.halftime_paths(summ_g, g["home"], g["away"], float(sp_), float(tot_))
             except Exception as e:  # noqa: BLE001
                 log.warning("caminos %s: %s", gid, e)
+            # mercados que salen de la simulación: touchdowns, goles de campo, pateadores, 1ª mitad, puntos alternos
+            try:
+                summ_g["anotaciones"] = AN.construir(sim, summ_g, g)
+            except Exception as e:  # noqa: BLE001
+                log.warning("anotaciones %s: %s", gid, e)
             game_out[gid] = summ_g
             game_picks += _game_market_picks(g, summ_g, calib)
+            try:
+                if summ_g.get("anotaciones"):
+                    game_picks += AN.picks(g, summ_g)
+            except Exception as e:  # noqa: BLE001
+                log.warning("picks de mercados %s: %s", gid, e)
         except Exception as e:  # noqa: BLE001
             log.warning("sim %s: %s", gid, e)
 
@@ -793,6 +817,33 @@ def offense_active(real: pd.DataFrame, roster: pd.DataFrame) -> dict[str, float]
 # En receptores no hubo sesgo consistente (el #1 con 12%+ de targets liberados salió 0.93-1.06 según el año).
 RB_VAC = {"rush_att": 1.04, "rush_yds": 1.08}
 
+# Lluvia de verdad en el partido (2+ mm; clima histórico de Open-Meteo, 843 partidos al aire libre 2022-26): el total
+# quedó 3.9 pts abajo de la línea de cierre (Menos 64%) y las yardas de pase / de recepción 6% abajo de lo
+# proyectado, en 4 de 5 temporadas. Acarreos +2% y yardas por tierra: sin efecto claro → no se tocan. Se aplica la
+# MITAD porque se midió con la lluvia que cayó, no con el pronóstico, y sólo si 2+ fuentes del clima coinciden.
+LLUVIA_STATS = {("QB", "pass_yds"): 0.97, ("WR", "rec_yds"): 0.97, ("TE", "rec_yds"): 0.97}
+LLUVIA_PTS = 1.0               # puntos menos por equipo (≈ −2 al total, la mitad de lo medido)
+
+
+def _rain_adjust(frows: pd.DataFrame, preds: dict, game_rows: dict, notes: dict) -> int:
+    mojados = {gid for gid, g in game_rows.items() if not g.get("indoor") and weather.lluvia_fuerte(g.get("weather"))}
+    if not mojados:
+        return 0
+    n = 0
+    for (pos, st), f_ in LLUVIA_STATS.items():
+        res = preds.get(st)
+        if not res:
+            continue
+        for j, ridx in enumerate(res["index"]):
+            r = frows.loc[ridx]
+            if r["game_id"] in mojados and r["position"] == pos:
+                res["mu"][j] *= f_
+                notes.setdefault((r["game_id"], r["player_id"]), {})["lluvia"] = (
+                    "Lluvia confirmada por 2+ fuentes: con lluvia de verdad el juego aéreo rindió ~6% menos de lo "
+                    "proyectado (4 de 5 temporadas); ya se le restó la mitad")
+                n += 1
+    return n
+
 
 def _expected_out(fut_all: pd.DataFrame, avail: dict, p_off: dict, col: str, thr: float) -> dict:
     """Por partido-equipo: cuota que se va con los que venían jugando y ahora (probablemente) no juegan."""
@@ -866,7 +917,7 @@ def _future_rows(upcoming: list[dict], roster: pd.DataFrame, avail: dict, starte
             for r in roster[roster["team"] == team].itertuples():
                 a = avail.get(r.gsis_id, {})
                 pp = a.get("p_play", 1.0) * p_off.get(r.gsis_id, 1.0)
-                if r.status == "RES":
+                if r.status == "RES" and not a.get("activado"):
                     pp = 0.0
                 rows.append({"player_id": r.gsis_id, "name": r.full_name, "position": r.position,
                              "game_id": g["game_id"], "team": team, "opp": opp, "season": g["season"],
@@ -974,7 +1025,10 @@ def _game_factors(g: dict, rh: pd.Series, ra: pd.Series, ranks: dict, starters: 
     wx = g.get("weather") or {}
     if wx.get("wind_mph") and wx["wind_mph"] >= 15:
         f.append({"team": None, "weight": 8, "text": f"Viento de {wx['wind_mph']:.0f} mph: menos pases profundos y goles de campo"})
-    if wx.get("precip_prob") and wx["precip_prob"] >= 60:
+    ll = wx.get("lluvia") or {}
+    if ll.get("veredicto") in ("lluvia", "posible"):
+        f.append({"team": None, "weight": 7 if ll["veredicto"] == "lluvia" else 4, "text": ll["texto"]})
+    elif not ll and wx.get("precip_prob") and wx["precip_prob"] >= 60:
         f.append({"team": None, "weight": 5, "text": f"Probabilidad de {wx.get('label', 'lluvia').lower()} {wx['precip_prob']:.0f}%"})
     return sorted(f, key=lambda x: -x["weight"])[:7]
 
@@ -1464,6 +1518,8 @@ def _player_outputs(frows, preds, dist, avail, mindex, game_rows, ranks, calib, 
                 nt = (notes or {}).get((gid, pid)) or {}
                 if nt.get("vac") and stat in ("rush_att", "rush_yds", "rush_rec_yds"):
                     facts.append(nt["vac"])
+                if nt.get("lluvia") and stat in ("pass_yds", "rec_yds", "pass_rush_yds", "rush_rec_yds"):
+                    facts.append(nt["lluvia"])
                 deps = nt.get("dep_rush" if stat in ("rush_att", "rush_yds") else "dep_rec") or []
                 if stat in ("pass_yds", "pass_att", "pass_cmp", "pass_tds"):
                     deps = nt.get("dep_rec") or []

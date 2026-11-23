@@ -1,7 +1,7 @@
 "use client";
 
 import { Duo, IconTile } from "@/components/icons";
-import { Broadcast, Cake, Clover, Coffee, Cookie, Football, MoonStars, Rocket, Sparkle, Ticket, Trophy } from "@phosphor-icons/react";
+import { Broadcast, Clover, Football, Rocket, Ticket, Trophy } from "@phosphor-icons/react";
 import clsx from "clsx";
 import { AlertTriangle, ArrowLeft, CloudRain, Home, Wind } from "lucide-react";
 import Link from "next/link";
@@ -17,13 +17,13 @@ import { Clip, VideoRail } from "@/components/videos";
 
 function saludo() {
   const h = new Date().getHours();
-  return h < 12 ? "Buenos días" : h < 19 ? "Buenas tardes" : "Buenas noches";
+  return h < 6 ? "Buenas noches" : h < 12 ? "Buenos días" : h < 19 ? "Buenas tardes" : "Buenas noches";
 }
 
 type WeekResp = { season: number; week: number; weeks: number[]; games: GameCard[] };
 
 export default function Page() {
-  return <Suspense fallback={<Loading label="Horneando la semana…" />}><WeekPage /></Suspense>;
+  return <Suspense fallback={<Loading label="Cargando la semana…" />}><WeekPage /></Suspense>;
 }
 
 /** Lo que Cinna dice en su globito: cambia con el momento (en vivo, día de partido, mañana, noche). */
@@ -31,17 +31,17 @@ function mensajes(m: MenuData | undefined, games: GameCard[]): string[] {
   const out: string[] = [];
   const h = new Date().getHours();
   const vivo = games.filter((g) => g.status === "in").length;
-  if (vivo) out.push(`¡Hay ${vivo} partido${vivo > 1 ? "s" : ""} en vivo! La probabilidad se mueve al momento.`);
+  if (vivo) out.push(`Hay ${vivo} partido${vivo > 1 ? "s" : ""} en vivo: la probabilidad se actualiza al momento.`);
   const nx = m?.proximo;
   if (nx) {
     const hrs = (new Date(nx.kickoff).getTime() - Date.now()) / 3.6e6;
     if (hrs > 0 && hrs < 30) out.push(`${hrs < 12 ? "Hoy" : "Ya casi"} juegan ${nx.away.abbr} @ ${nx.home.abbr}. Revisa los inactivos 90 min antes.`);
   }
-  if (m) out.push(`Te horneé ${m.conteos.segura} picks seguras y ${m.conteos.valor} de valor.`);
-  if (m?.clips.length) out.push("Hay videos nuevos: ponte cómodo y agarra palomitas.");
-  out.push(h < 12 ? "¡Buenos días! Café, datos y nada de corazonadas."
-    : h >= 22 ? "Ya es noche: apuesta poquito y duerme bien."
-      : "Dos o tres patas sanas valen más que un parlay de ocho.");
+  if (m) out.push(`Esta semana hay ${m.conteos.segura} picks seguras y ${m.conteos.valor} de valor.`);
+  if (m?.clips.length) out.push("Hay videos nuevos para revisar tus props.");
+  out.push(h < 12 ? "Decide con datos, no con corazonadas."
+    : h >= 22 ? "Apuesta poco y con disciplina."
+      : "Dos o tres patas sólidas valen más que un parlay de ocho.");
   return out;
 }
 
@@ -54,8 +54,8 @@ function Globito({ msgs }: { msgs: string[] }) {
   if (!msgs.length) return null;
   const msg = msgs[i % msgs.length];
   return (
-    <div key={msg} className="swap-in relative inline-block max-w-[330px] rounded-2xl rounded-tl-[4px] border border-line bg-pill px-3 py-1.5 font-hand text-[17px] font-medium leading-[1.15] text-ink2 shadow-sm">
-      {msg}
+    <div key={msg} className="swap-in flex max-w-[460px] items-start gap-2 text-[13px] leading-snug text-ink2">
+      <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--brand)]" />{msg}
     </div>
   );
 }
@@ -84,8 +84,8 @@ function WeekPage() {
     return () => clearInterval(t);
   }, [live, mutate]);
 
-  if (isLoading && !data) return <Loading label="Horneando la semana…" />;
-  if (!data || !data.games.length) return <Empty>Todavía no hay partidos cargados. Cinna está horneando los datos…</Empty>;
+  if (isLoading && !data) return <Loading label="Cargando la semana…" />;
+  if (!data || !data.games.length) return <Empty>Todavía no hay partidos cargados. Cinna está actualizando los datos…</Empty>;
 
   const liveGames = data.games.filter((g) => g.status === "in");
   const groups: Record<string, GameCard[]> = {};
@@ -101,14 +101,14 @@ function WeekPage() {
         <div className="hero px-5 py-5 md:px-7 md:py-6">
           <div className="relative z-10 flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-4">
-              <CinnaBun size={64} mood="think" className="bob hidden shrink-0 sm:block" />
+              <CinnaBun size={56} mood="think" className="hidden shrink-0 sm:block" />
               <div>
-                <div className="-rotate-1 font-hand text-[19px] font-semibold leading-none text-brand">de la libreta de Cinna</div>
-                <h1 className="font-display text-[30px] font-semibold leading-tight">Semana {data.week} · resultados</h1>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brand">Semanas pasadas</div>
+                <h1 className="font-display text-[28px] font-bold leading-tight tracking-tight">Semana {data.week} · resultados</h1>
                 <p className="text-sm text-ink2">Cómo terminó cada partido y qué tanto se acercó Cinna.</p>
               </div>
             </div>
-            <Link href="/" className="inline-flex items-center gap-1.5 rounded-full bg-brand-fill px-4 py-2 text-sm font-bold text-on-brand shadow-[0_8px_16px_-10px_var(--brand)]">
+            <Link href="/" className="inline-flex items-center gap-1.5 rounded-xl bg-brand-fill px-4 py-2 text-sm font-semibold text-on-brand">
               <ArrowLeft size={15} /> Volver a la semana {actual}
             </Link>
           </div>
@@ -127,23 +127,16 @@ function WeekPage() {
   return (
     <div className="space-y-8">
       <div className="hero px-5 py-5 md:px-7 md:py-6">
-        {/* repostería flotando, muy discreta */}
-        <Duo icon={Cake} tone="rosa" size={34} className="float-a absolute right-[36%] top-3 hidden opacity-80 2xl:block" />
-        <Duo icon={Cookie} tone="canela" size={30} className="float-b absolute bottom-3 right-[44%] hidden opacity-75 2xl:block" />
-        <Duo icon={Sparkle} tone="miel" size={24} className="float-b absolute right-[30%] top-[45%] hidden opacity-80 xl:block" />
         <div className="relative z-10 flex flex-wrap items-center justify-between gap-5">
           <div className="flex min-w-0 items-center gap-4">
             <div className="relative shrink-0 self-start sm:self-auto">
-              <CinnaBun size={88} mood={mood} className="bob h-[58px] w-[58px] sm:h-[88px] sm:w-[88px]" />
-              {mood === "sleepy" && <IconTile icon={MoonStars} tone="lila" size={28} className="float-a absolute -right-2 -top-1" />}
-              {mood === "wow" && <IconTile icon={Football} tone="canela" size={28} className="float-a absolute -right-2 -top-2" />}
-              {mood === "happy" && new Date().getHours() < 12 && <IconTile icon={Coffee} tone="canela" size={28} className="float-b absolute -right-2 top-0" />}
+              <CinnaBun size={72} mood={mood} className="h-[52px] w-[52px] sm:h-[72px] sm:w-[72px]" />
             </div>
             <div className="min-w-0">
-              <div className="-rotate-1 font-hand text-[20px] font-semibold leading-none text-brand">{saludo()} · temporada {data.season}</div>
-              <h1 className="mt-1 font-display text-[32px] font-semibold leading-tight tracking-tight md:text-[38px]">Semana {data.week}</h1>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-brand">{saludo()} · Temporada {data.season}</div>
+              <h1 className="mt-1 font-display text-[30px] font-extrabold leading-tight tracking-tight md:text-[36px]">Semana {data.week}</h1>
               <p className="mt-0.5 text-sm text-ink2">
-                <b className="text-ink tnum">{data.games.length}</b> partidos en la mesa
+                <b className="text-ink tnum">{data.games.length}</b> partidos esta semana
                 {liveGames.length > 0 && <>, <b className="text-critical tnum">{liveGames.length}</b> en vivo</>}
                 {finals.length > 0 && <>, <b className="text-ink tnum">{finals.length}</b> ya terminados</>}.
               </p>
@@ -155,7 +148,7 @@ function WeekPage() {
               <Link key={t} href={`/picks?tier=${t}`} style={{ animationDelay: `${0.1 + k * 0.08}s` }}
                 className="enter card card-lift flex flex-col items-start gap-1.5 px-3 py-2.5 sm:flex-row sm:items-center sm:gap-3 sm:px-4">
                 <TierBadge tier={t} size="md" />
-                <span className="font-display text-2xl font-semibold tnum"><CountUp value={counts[t] ?? 0} /></span>
+                <span className="font-display text-2xl font-bold tnum"><CountUp value={counts[t] ?? 0} /></span>
               </Link>
             ))}
           </div>
@@ -268,7 +261,7 @@ function WeekPage() {
 function PasadasChips({ weeks, sel }: { weeks: number[]; sel?: number }) {
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-dashed border-line pt-4">
-      <span className="mr-1 font-hand text-[18px] font-semibold text-mute">semanas pasadas:</span>
+      <span className="mr-1 text-xs font-bold uppercase tracking-[0.1em] text-mute">Semanas pasadas</span>
       {weeks.map((w) => (
         <Link key={w} href={`/?semana=${w}`}
           className={clsx("rounded-full border px-3 py-1 text-xs font-bold transition-colors",

@@ -1,25 +1,23 @@
 import type { Metadata, Viewport } from "next";
-import { Caveat, Fredoka, JetBrains_Mono, Nunito } from "next/font/google";
+import { Inter, JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google";
 import { Shell } from "@/components/shell";
 import "./globals.css";
 
-// Fredoka: redonda y con carácter para títulos y la marca. Nunito: suave y muy legible para el cuerpo y los números.
-const fredoka = Fredoka({ variable: "--font-fredoka", subsets: ["latin"], weight: ["400", "500", "600", "700"] });
-const nunito = Nunito({ variable: "--font-nunito", subsets: ["latin"] });
+// Plus Jakarta Sans: títulos, cifras grandes y la marca (geométrica, sobria). Inter: cuerpo y tablas (muy legible, números parejos).
+const display = Plus_Jakarta_Sans({ variable: "--font-display-face", subsets: ["latin"], weight: ["500", "600", "700", "800"] });
+const inter = Inter({ variable: "--font-body-face", subsets: ["latin"] });
 const mono = JetBrains_Mono({ variable: "--font-mono-face", subsets: ["latin"] });
-// Caveat: letra a mano para notitas (secciones del menú, consejos de Cinna)
-const caveat = Caveat({ variable: "--font-caveat", subsets: ["latin"], weight: ["500", "600", "700"] });
 
 export const metadata: Metadata = {
   title: { default: "CinnaParleys", template: "%s · CinnaParleys" },
-  description: "Parlays y picks de la NFL horneados con datos: ganador, props de jugadores, escalones y parlays con su probabilidad real.",
+  description: "Análisis de la NFL con datos: ganador, props de jugadores, escalones y parlays con su probabilidad real.",
   applicationName: "CinnaParleys",
 };
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#fbf5ec" },
-    { media: "(prefers-color-scheme: dark)", color: "#1b1311" },
+    { media: "(prefers-color-scheme: light)", color: "#f6f4f1" },
+    { media: "(prefers-color-scheme: dark)", color: "#121010" },
   ],
   width: "device-width",
   initialScale: 1,
@@ -30,7 +28,7 @@ const THEME_INIT = `try{var t=localStorage.getItem("cinna_theme");if(t==="dark"|
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="es" className={`${fredoka.variable} ${nunito.variable} ${mono.variable} ${caveat.variable}`} suppressHydrationWarning>
+    <html lang="es" className={`${display.variable} ${inter.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
       </head>

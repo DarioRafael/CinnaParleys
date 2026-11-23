@@ -35,7 +35,11 @@ class TeamInput:
 def simulate(home: TeamInput, away: TeamInput, drives: float, n: int = 20000, playoff: bool = False,
              seed: int | None = 7) -> dict:
     rng = np.random.default_rng(seed)
+    rng2 = np.random.default_rng(None if seed is None else seed + 104729)    # sólo para conteos nuevos (PAT)
     E = ENDGAME
+    # conteos extra por equipo: TD de defensa/equipos especiales, puntos extra convertidos, anotaciones en tiempo extra
+    xt = {s_: {"ret": np.zeros(n, np.int64), "pat": np.zeros(n, np.int64), "ot_td": np.zeros(n, np.int64),
+               "ot_fg": np.zeros(n, np.int64)} for s_ in ("h", "a")}
     # número de series (comparten ritmo)
     D = np.clip(np.rint(rng.normal(drives, E["drive_sd"], n)), 7, 16).astype(int)
     u = rng.random(n)
@@ -52,28 +56,37 @@ def simulate(home: TeamInput, away: TeamInput, drives: float, n: int = 20000, pl
         p_score = np.clip(ppd_target / per_score * fac, 0.02, 0.85)
         return p_score * t.td_share, p_score * (1 - t.td_share)
 
-    def block(k, p_td, p_fg, extra=True):
+    def block(k, p_td, p_fg, extra=True, side=None):
         tds = rng.binomial(k, np.clip(p_td, 0, 0.9))
         fgs = rng.binomial(k - tds, np.clip(p_fg / np.maximum(1 - p_td, 1e-6), 0, 1))
-        pts = 6 * tds + rng.binomial(tds, PAT_RATE) + 2 * rng.binomial(tds, TWO_PT_RATE) + 3 * fgs
+        pat = rng.binomial(tds, PAT_RATE)
+        two = rng.binomial(tds, TWO_PT_RATE)
+        pts = 6 * tds + pat + 2 * two + 3 * fgs
         if extra:
-            pts = pts + 3.5 * 2 * rng.poisson(NONOFF_TD_RATE / 2, len(k)) + 2 * rng.poisson(SAFETY_RATE / 2, len(k))
+            ret = rng.poisson(NONOFF_TD_RATE / 2, len(k))        # TD de defensa / equipos especiales (7 pts)
+            saf = rng.poisson(SAFETY_RATE / 2, len(k))
+            pts = pts + 3.5 * 2 * ret + 2 * saf
+            if side:
+                xt[side]["ret"] += ret
+                xt[side]["pat"] += rng2.binomial(ret, PAT_RATE + TWO_PT_RATE)
+        if side:
+            xt[side]["pat"] += pat
         return pts.astype(int), tds, fgs
 
     def early_points_2h(k1h, k1a, ptd_h, pfg_h, ptd_a, pfg_a):
         """Series antes de la última: 1er tiempo independiente; en el 2º el que gana se relaja
         y el que pierde arriesga (reduce la dispersión como en la NFL real)."""
         h1_h, h1_a = k1h // 2, k1a // 2
-        ph, tdh, fgh = block(h1_h, ptd_h, pfg_h)
-        pa, tda, fga = block(h1_a, ptd_a, pfg_a)
+        ph, tdh, fgh = block(h1_h, ptd_h, pfg_h, side="h")
+        pa, tda, fga = block(h1_a, ptd_a, pfg_a, side="a")
         m = ph - pa
         x = np.minimum(np.abs(m), 17) / 17.0 * E["kappa"]
         lead_h = m > 0
         lead_a = m < 0
         mh = np.where(lead_h, 1 - x, np.where(lead_a, 1 + x, 1.0))
         ma = np.where(lead_a, 1 - x, np.where(lead_h, 1 + x, 1.0))
-        p2h, t2h, f2h = block(k1h - h1_h, ptd_h * mh, pfg_h * (1 + (mh - 1) * 0.5))
-        p2a, t2a, f2a = block(k1a - h1_a, ptd_a * ma, pfg_a * (1 + (ma - 1) * 0.5))
+        p2h, t2h, f2h = block(k1h - h1_h, ptd_h * mh, pfg_h * (1 + (mh - 1) * 0.5), side="h")
+        p2a, t2a, f2a = block(k1a - h1_a, ptd_a * ma, pfg_a * (1 + (ma - 1) * 0.5), side="a")
         half["h"], half["a"] = ph, pa           # marcador al medio tiempo (para los escenarios)
         return ph + p2h, tdh + t2h, fgh + f2h, pa + p2a, tda + t2a, fga + f2a
 
@@ -93,8 +106,11 @@ def simulate(home: TeamInput, away: TeamInput, drives: float, n: int = 20000, pl
         r = rng.random(len(margin))
         is_td = r < td
         is_fg = (~is_td) & (r < td + fg)
-        pts = is_td * (6 + (rng.random(len(margin)) < PAT_RATE + TWO_PT_RATE * 2)) + is_fg * 3
-        return pts.astype(int), is_td.astype(int), is_fg.astype(int)
+        conv = rng.random(len(margin)) < PAT_RATE + TWO_PT_RATE * 2
+        pts = is_td * (6 + conv) + is_fg * 3
+        # de esas conversiones, las que fueron patada de punto extra (no conversión de 2)
+        pat = is_td & conv & (rng2.random(len(margin)) < PAT_RATE / (PAT_RATE + TWO_PT_RATE * 2))
+        return pts.astype(int), is_td.astype(int), is_fg.astype(int), pat.astype(np.int64)
 
     half: dict = {}
     ptd_h, pfg_h = probs(home, D_h, env * th)
@@ -102,15 +118,17 @@ def simulate(home: TeamInput, away: TeamInput, drives: float, n: int = 20000, pl
     ph, tdh, fgh, pa, tda, fga = early_points_2h(D_h - 1, D_a - 1, ptd_h, pfg_h, ptd_a, pfg_a)
     home_last = rng.random(n) < 0.5
     # primera "última serie": el equipo que NO cierra
-    pts1_h, td1_h, fg1_h = final_drive(ptd_h, pfg_h, ph - pa)
-    pts1_a, td1_a, fg1_a = final_drive(ptd_a, pfg_a, pa - ph)
+    pts1_h, td1_h, fg1_h, pat1_h = final_drive(ptd_h, pfg_h, ph - pa)
+    pts1_a, td1_a, fg1_a, pat1_a = final_drive(ptd_a, pfg_a, pa - ph)
     ph = ph + np.where(~home_last, pts1_h, 0); tdh += np.where(~home_last, td1_h, 0); fgh += np.where(~home_last, fg1_h, 0)
     pa = pa + np.where(home_last, pts1_a, 0); tda += np.where(home_last, td1_a, 0); fga += np.where(home_last, fg1_a, 0)
+    xt["h"]["pat"] += np.where(~home_last, pat1_h, 0); xt["a"]["pat"] += np.where(home_last, pat1_a, 0)
     # el que cierra ve el marcador actualizado
-    pts2_h, td2_h, fg2_h = final_drive(ptd_h, pfg_h, ph - pa)
-    pts2_a, td2_a, fg2_a = final_drive(ptd_a, pfg_a, pa - ph)
+    pts2_h, td2_h, fg2_h, pat2_h = final_drive(ptd_h, pfg_h, ph - pa)
+    pts2_a, td2_a, fg2_a, pat2_a = final_drive(ptd_a, pfg_a, pa - ph)
     ph = ph + np.where(home_last, pts2_h, 0); tdh += np.where(home_last, td2_h, 0); fgh += np.where(home_last, fg2_h, 0)
     pa = pa + np.where(~home_last, pts2_a, 0); tda += np.where(~home_last, td2_a, 0); fga += np.where(~home_last, fg2_a, 0)
+    xt["h"]["pat"] += np.where(home_last, pat2_h, 0); xt["a"]["pat"] += np.where(~home_last, pat2_a, 0)
     tie = ph == pa
     # tiempo extra
     n_ot = int(tie.sum())
@@ -121,16 +139,26 @@ def simulate(home: TeamInput, away: TeamInput, drives: float, n: int = 20000, pl
         r2 = rng.random(n_ot)
         home_w = (~ot_tie) & (r2 < home_edge)
         away_w = (~ot_tie) & ~home_w
-        add = np.where(rng.random(n_ot) < 0.55, 3, 6 + (rng.random(n_ot) < 0.9))
+        r_fg = rng.random(n_ot)
+        r_x = rng.random(n_ot)
+        ot_fg = r_fg < 0.55
+        add = np.where(ot_fg, 3, 6 + (r_x < 0.9))
         idx = np.where(tie)[0]
         ph[idx[home_w]] += add[home_w]
         pa[idx[away_w]] += add[away_w]
+        # la anotación del tiempo extra también cuenta para "total de touchdowns / goles de campo"
+        xt["h"]["ot_fg"][idx[home_w & ot_fg]] += 1; xt["h"]["ot_td"][idx[home_w & ~ot_fg]] += 1
+        xt["a"]["ot_fg"][idx[away_w & ot_fg]] += 1; xt["a"]["ot_td"][idx[away_w & ~ot_fg]] += 1
     margin = ph - pa
     total = ph + pa
     return {
         "home_pts": ph, "away_pts": pa, "margin": margin, "total": total,
         "reg_tie": tie, "home_td": tdh, "away_td": tda, "home_fg": fgh, "away_fg": fga,
         "home_h1": half.get("h"), "away_h1": half.get("a"),
+        # conteos completos, como los liquidan las casas (incluyen defensa/equipos especiales y tiempo extra)
+        "home_td_all": tdh + xt["h"]["ret"] + xt["h"]["ot_td"], "away_td_all": tda + xt["a"]["ret"] + xt["a"]["ot_td"],
+        "home_fg_all": fgh + xt["h"]["ot_fg"], "away_fg_all": fga + xt["a"]["ot_fg"],
+        "home_pat": xt["h"]["pat"], "away_pat": xt["a"]["pat"],
     }
 
 

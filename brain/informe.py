@@ -54,7 +54,10 @@ def _absorbers(team: str, players: list[dict]) -> list[dict]:
             if dc >= 0.05:
                 txt.append(f"acarreos {_pct(ro.get('car_share'))}→{_pct(ro.get('car_share_proj'))}")
             out.append({"jugador": f"{p['name']} ({p['position']})", "sube": ", ".join(txt), "peso": dt + dc / 2,
-                        "linea": _ou(p, main)})
+                        "linea": _ou(p, main), "name": p["name"], "pos": p["position"], "headshot": p.get("headshot"),
+                        "player_id": p["player_id"],
+                        "targets": [_r(ro.get("tgt_share"), 3), _r(ro.get("tgt_share_proj"), 3)] if dt >= 0.025 else None,
+                        "acarreos": [_r(ro.get("car_share"), 3), _r(ro.get("car_share_proj"), 3)] if dc >= 0.05 else None})
     out.sort(key=lambda x: -x["peso"])
     for x in out:
         x.pop("peso")
@@ -85,7 +88,11 @@ def build(game_id: str) -> dict:
             "total_cerebro": _r(pred.get("total_mu")), "total_mercado": tot,
             "spread_mercado": (f"{H if sp > 0 else A} -{abs(sp):g}" if sp else "pick'em") if sp is not None else None,
             "prob_mas_del_total": _pct(pred.get("p_over")), "prob_local_cubre": _pct(pred.get("p_home_cover")),
-            "incertidumbre": pred.get("incertidumbre")}
+            "incertidumbre": pred.get("incertidumbre"),
+            # números crudos para dibujar (las cadenas de arriba las usa el asistente)
+            "home": H, "away": A, "p_home": _r(pred.get("p_home"), 4), "p_away": _r(pred.get("p_away"), 4),
+            "home_mu": _r(pred.get("home_mu")), "away_mu": _r(pred.get("away_mu")), "spread_home": sp,
+            "p_over": _r(pred.get("p_over"), 4), "p_home_cover": _r(pred.get("p_home_cover"), 4)}
     if sp is not None and pred.get("margin_mu") is not None:
         lect["cerebro_vs_mercado"] = {"margen_local_pts": _r(pred["margin_mu"] - sp),
                                       "total_pts": _r((pred.get("total_mu") or 0) - (tot or 0)) if tot is not None else None}
@@ -105,6 +112,12 @@ def build(game_id: str) -> dict:
                     "fuera": [f"{x['name']} ({x.get('pos')}, {x.get('status')}{', ' + str(x['injury']) if x.get('injury') else ''})" for x in gi.get("fuera") or []],
                     "duda": [f"{x['name']} ({x.get('pos')}, {x.get('status')}{', ' + str(x['practice']) if x.get('practice') else ''})" for x in gi.get("duda") or []]}
         uni[team] = t or "completa (sin titulares fuera ni en duda)"
+        out.setdefault("unidades_grid", {})[team] = [
+            {"grupo": k, "nombre": (grupos.get(k) or {}).get("nombre", k), "titulares": (grupos.get(k) or {}).get("titulares"),
+             "fuera": [{"name": x["name"], "pos": x.get("pos"), "estado": x.get("status"), "detalle": x.get("injury")}
+                       for x in (grupos.get(k) or {}).get("fuera") or []],
+             "duda": [{"name": x["name"], "pos": x.get("pos"), "estado": x.get("status"), "detalle": x.get("practice")}
+                      for x in (grupos.get(k) or {}).get("duda") or []]} for k in GRP_ORDER]
     out["unidades"] = {"equipos": uni, "notas": un.get("notas") or [],
                        "ajuste_aplicado_pts": {H: (un.get("ajuste") or {}).get("home"), A: (un.get("ajuste") or {}).get("away")}}
 
@@ -116,6 +129,8 @@ def build(game_id: str) -> dict:
             ro = p.get("role") or {}
             bajas[p["team"]].append({"jugador": f"{p['name']} ({p['position']})", "estado": av.get("status"),
                                      "prob_juega": _pct(av.get("p_play")), "detalle": (av.get("comment") or "")[:140],
+                                     "name": p["name"], "pos": p["position"], "headshot": p.get("headshot"),
+                                     "player_id": p["player_id"], "p": _r(av.get("p_play"), 3),
                                      "_peso": (ro.get("snap_pct") or 0) * (1 - (av.get("p_play") or 0))})
     for t in bajas:
         bajas[t].sort(key=lambda x: -x["_peso"])
@@ -131,7 +146,9 @@ def build(game_id: str) -> dict:
     # ---------------- 4. QBs
     st = pred.get("starters") or {}
     out["qbs"] = {(H if k == "home" else A): {"titular": (v or {}).get("name"), "prob_juega": _pct((v or {}).get("p_play")),
-                                               "motivo": (v or {}).get("reason")} for k, v in st.items() if v}
+                                               "motivo": (v or {}).get("reason"), "p": _r((v or {}).get("p_play"), 3),
+                                               "headshot": next((p.get("headshot") for p in players if p["name"] == (v or {}).get("name")), None)}
+                  for k, v in st.items() if v}
 
     # ---------------- 5. esquema y escenarios
     esq = pred.get("esquema") or {}
@@ -144,6 +161,7 @@ def build(game_id: str) -> dict:
     # "¿y si va perdiendo al medio?": prob. de cada situación (simulación) y de ganar desde ahí (modelo en vivo)
     cam = pred.get("caminos") or {}
     if cam:
+        out["caminos"] = cam
         out["si_va_perdiendo_o_ganando_al_medio"] = {
             t: [f"{r['situacion']} ({_pct(r['prob_de_estar'])} de las veces) → gana {_pct(r['gana_desde_ahi'])}" for r in rows]
             for t, rows in cam.items()}
@@ -166,7 +184,9 @@ def build(game_id: str) -> dict:
     ang = []
     for p in el[:4]:
         ang.append({"angulo": f"Pierna ancla: {p.get('title')} ({'súper élite' if p.get('super_elite') else 'élite'}, {_pct(p.get('prob'))})",
-                    "evidencia": "validado", "por_que": "Los Élite ganaron ~59% contra líneas reales en la temporada de prueba."})
+                    "evidencia": "validado", "por_que": "Los Élite ganaron ~59% contra líneas reales en la temporada de prueba.",
+                    "tipo": "ancla", "titulo": p.get("title"), "prob": _r(p.get("prob"), 3), "headshot": p.get("headshot"),
+                    "nivel": "súper élite" if p.get("super_elite") else "élite"})
     adj = un.get("ajuste") or {}
     for side, team, opp in (("home", H, A), ("away", A, H)):
         if (adj.get(side) or 0) > 0:
@@ -189,12 +209,13 @@ def build(game_id: str) -> dict:
                 gap = ln["proyeccion"] - ln["linea"]
                 ang.append({"angulo": f"{x['jugador']} hereda volumen ({x['sube']}): proyección {ln['proyeccion']} vs línea {ln['linea']} {ln['stat']}"
                                       + (" → el mercado parece no haberlo ajustado" if gap > 0 else " → la casa ya lo ajustó"),
-                            "evidencia": "modelo", "por_que": "La cuota proyectada redistribuye el volumen de los titulares ausentes."})
+                            "evidencia": "modelo", "por_que": "La cuota proyectada redistribuye el volumen de los titulares ausentes.",
+                            "tipo": "volumen", "headshot": x.get("headshot")})
     unc = (pred.get("incertidumbre") or {})
     if unc.get("nivel") == "alta":
         who = sorted({r.split(":")[0] for r in unc.get("razones") or [] if r.split(":")[0] in (H, A)}) or [H, A]
         ang.append({"angulo": f"Evita (o apuesta chico) las piernas del juego aéreo de {' y '.join(who)}: su QB es incierto",
-                    "evidencia": "validado", "por_que": " / ".join(unc.get("razones") or [])})
+                    "evidencia": "validado", "por_que": " / ".join(unc.get("razones") or []), "tipo": "evitar"})
     for side, team in (("home", H), ("away", A)):
         ol = (((un.get(side) or {}).get("grupos") or {}).get("OL") or {}).get("fuera") or []
         if len(ol) >= 2:
@@ -213,7 +234,9 @@ def build(game_id: str) -> dict:
         ang.append({"angulo": f"Parlay de guion '{b['nombre']}' ({_pct(b['prob'])}, {b.get('marcador_tipico')}): "
                               + " + ".join(legs[:3]),
                     "evidencia": "modelo", "por_que": "Piernas que suben juntas en la simulación conjunta de 20,000 partidos; "
-                                                     "sólo tiene sentido si crees que el partido va por ahí."})
+                                                     "sólo tiene sentido si crees que el partido va por ahí.",
+                    "tipo": "guion", "escenario": b["nombre"], "prob": b.get("prob"), "marcador": b.get("marcador_tipico"),
+                    "piernas": legs[:3]})
     out["angulos_para_parlays"] = ang
     out["como_leer"] = ("validado = probado contra líneas reales en temporadas no vistas; modelo = proyección de Cinna; "
                         "contexto = lógico pero sin ventaja probada (no lo apuestes solo).")

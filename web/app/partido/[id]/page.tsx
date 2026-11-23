@@ -1,18 +1,21 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowLeft, Check, CloudSun, MapPin, MessageSquareText, Tv } from "lucide-react";
+import { ArrowLeft, Check, CloudSun, Crown, MapPin, MessageSquareText, Tv } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { GameCard, GamePred, Pick, american, ago, kickoffLabel, num, pct, useApi } from "@/lib/api";
 import { PmfChart, ProbLine } from "@/components/charts";
 import { NewsList } from "@/components/news-list";
 import { PickCard } from "@/components/pick-card";
+import { ArmadosConBoton } from "@/components/armados";
 import { Escenarios, Esquema, ScenariosPanel } from "@/components/scenarios";
 import { Autopsia, PublicOpinion, ReviewPanel } from "@/components/review";
 import { InformePanel } from "@/components/informe";
 import { JugadasPanel } from "@/components/jugadas";
+import { MercadosData, MercadosPanel } from "@/components/mercados";
+import { ConectaTuCasa } from "@/components/enviar-cinna";
 import { Caminos, LivePanel, LiveState } from "@/components/live";
 import { Empty, Headshot, Loading, Meter, SectionTitle, Segmented, StatusPill, TeamLogo, WinBar } from "@/components/ui";
 
@@ -36,7 +39,7 @@ type GameResp = GameCard & {
   en_vivo?: LiveState | null;
   autopsia?: Autopsia | null; publico?: { equipos: Record<string, number>; n: number } | null;
   ranks: { home: Ranks | null; away: Ranks | null };
-  players: PlayerProj[]; picks: Pick[];
+  players: PlayerProj[]; picks: Pick[]; mercados?: MercadosData | null;
   injuries: { player_id: string; name: string; team: string; position: string; status: string; p_play: number; source: string; comment: string;
     data: { history: { src: string; text: string; at?: string; tier?: number; applied?: boolean }[] } }[];
   news: { news_id: string; source: string; tier: number; tier_label: string; published_at: string; title: string; url: string }[];
@@ -61,8 +64,13 @@ export default function GamePage() {
     const t = setInterval(() => { fetch("/api/live").finally(() => reload()); }, 60000);
     return () => clearInterval(t);
   }, [data?.status, reload]);
-  const [tab, setTab] = useState<"resumen" | "informe" | "revision" | "escenarios" | "jugadores" | "picks" | "lesiones" | "noticias" | "jugadas">("resumen");
+  const [tab, setTab] = useState<"resumen" | "informe" | "revision" | "escenarios" | "mercados" | "jugadores" | "picks" | "armados" | "lesiones" | "noticias" | "jugadas">("resumen");
   const [tabTouched, setTabTouched] = useState(false);
+  useEffect(() => {        // enlace directo a una pestaña: /partido/…?tab=mercados
+    const t = new URLSearchParams(window.location.search).get("tab");
+    const validas = ["resumen", "informe", "escenarios", "mercados", "jugadores", "picks", "armados", "lesiones", "noticias", "jugadas"];
+    if (t && validas.includes(t)) { setTabTouched(true); setTab(t as typeof tab); }
+  }, []);
   useEffect(() => {
     if (!tabTouched && data?.autopsia) setTab("revision");        // partido terminado: abre directo la revisión
   }, [data?.autopsia, tabTouched]);
@@ -139,8 +147,10 @@ export default function GamePage() {
         ...(data.autopsia ? [{ value: "revision", label: "Revisión" }] : []),
         ...(g.status === "pre" && hasPred ? [{ value: "informe", label: "Informe" }] : []),
         ...(p?.escenarios ? [{ value: "escenarios", label: "Escenarios" }] : []),
+        ...(data.mercados?.grupos?.length ? [{ value: "mercados", label: "Mercados" }] : []),
         { value: "jugadores", label: "Jugadores", count: g.players.length },
         { value: "picks", label: "Picks", count: g.picks.length },
+        ...(g.status === "pre" ? [{ value: "armados", label: "Armados" }] : []),
         { value: "lesiones", label: "Lesiones", count: g.injuries.filter((i) => i.p_play < 1).length },
         { value: "noticias", label: "Noticias", count: g.news.length },
         { value: "jugadas", label: g.status === "pre" ? "Videos" : "Jugadas y videos" },
@@ -153,10 +163,11 @@ export default function GamePage() {
       {tab === "informe" && <InformePanel id={g.game_id} />}
       {tab === "escenarios" && p?.caminos && <Caminos c={p.caminos} />}
       {tab === "escenarios" && p?.escenarios && <ScenariosPanel esc={p.escenarios} sq={p.esquema} home={g.home.abbr} away={g.away.abbr} />}
+      {tab === "mercados" && data.mercados && <MercadosPanel gameId={g.game_id} data={data.mercados} home={g.home} away={g.away} />}
       {tab === "jugadores" && <Players g={data} />}
-      {tab === "picks" && (g.picks.length ? (
-        <div className="grid gap-4 lg:grid-cols-2">{g.picks.map((pk) => <PickCard key={pk.pick_id} p={pk} />)}</div>
-      ) : <Empty>Sin picks con nivel para este partido todavía (las casas publican props unos días antes).</Empty>)}
+      {tab === "picks" && (g.picks.length ? <GamePicks picks={g.picks} />
+        : <Empty>Sin picks con nivel para este partido todavía (las casas publican props unos días antes).</Empty>)}
+      {tab === "armados" && <div className="space-y-5"><ConectaTuCasa /><ArmadosConBoton gameId={g.game_id} /></div>}
       {tab === "lesiones" && <Injuries g={data} />}
       {tab === "noticias" && <NewsList items={g.news} />}
       {tab === "jugadas" && <JugadasPanel gameId={g.game_id} home={g.home.abbr} away={g.away.abbr} />}
@@ -432,6 +443,62 @@ function Players({ g }: { g: GameResp }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+type PickTier = "todas" | "segura" | "valor" | "arriesgada";
+type PickKind = "todos" | "ou" | "alt" | "td" | "game" | "mercado";
+type PickSort = "prob" | "confidence" | "edge";
+
+/** Picks del partido con los mismos filtros y orden que la página de Picks (por defecto, los más probables primero). */
+function GamePicks({ picks }: { picks: Pick[] }) {
+  const [tier, setTier] = useState<PickTier>("todas");
+  const [kind, setKind] = useState<PickKind>("todos");
+  const [sort, setSort] = useState<PickSort>("prob");
+  const [eliteOnly, setEliteOnly] = useState(false);
+  const count = (t: string) => picks.filter((p) => p.tier === t).length;
+  const nElite = picks.filter((p) => p.elite).length;
+  const list = useMemo(() => {
+    let l = picks;
+    if (eliteOnly) l = l.filter((p) => p.elite);
+    else if (tier !== "todas") l = l.filter((p) => p.tier === tier);
+    if (kind === "game") l = l.filter((p) => p.type === "game" && !p.extra);
+    else if (kind === "td") l = l.filter((p) => p.kind === "td" || p.kind === "td2");
+    else if (kind !== "todos") l = l.filter((p) => p.kind === kind);
+    const key = (p: Pick) => (sort === "edge" ? p.edge ?? -1 : sort === "prob" ? p.prob : p.confidence);
+    return [...l].sort((a, b) => key(b) - key(a));
+  }, [picks, tier, kind, sort, eliteOnly]);
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <Segmented value={tier} onChange={setTier} options={[
+          { value: "todas", label: "Todas", count: picks.length },
+          { value: "segura", label: "Seguras", count: count("segura") },
+          { value: "valor", label: "Valor", count: count("valor") },
+          { value: "arriesgada", label: "Arriesgadas", count: count("arriesgada") },
+        ]} />
+        <Segmented value={kind} onChange={setKind} options={[
+          { value: "todos", label: "Todo" }, { value: "ou", label: "Más/Menos" }, { value: "alt", label: "Al menos X" },
+          { value: "td", label: "Touchdowns" }, { value: "game", label: "Partido" }, { value: "mercado", label: "Mercados" },
+        ]} />
+        {nElite > 0 && (
+          <button onClick={() => setEliteOnly((x) => !x)}
+            className={clsx("inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold",
+              eliteOnly ? "border-warning bg-[var(--warning)]/15 text-warning" : "border-line text-ink2 hover:text-ink")}>
+            <Crown size={15} /> Solo Élite <span className="rounded-md bg-page/60 px-1.5 text-[11px] tnum">{nElite}</span>
+          </button>
+        )}
+        <select value={sort} onChange={(e) => setSort(e.target.value as PickSort)}
+          className="rounded-lg border border-line bg-s1 px-3 py-2 text-sm text-ink2 outline-none">
+          <option value="prob">Ordenar: probabilidad</option>
+          <option value="confidence">Ordenar: confianza</option>
+          <option value="edge">Ordenar: ventaja vs línea</option>
+        </select>
+      </div>
+      {list.length
+        ? <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">{list.map((pk) => <PickCard key={pk.pick_id} p={pk} />)}</div>
+        : <Empty>No hay picks con ese filtro en este partido.</Empty>}
     </div>
   );
 }

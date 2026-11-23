@@ -18,6 +18,7 @@ type Perf = {
   calibration: { bin: string; pred: number; real: number; n: number }[];
   props_backtest: Record<string, { n: number; mae: number; mae_baseline: number; mejora_pct: number; calibracion: { bin: string; pred: number; real: number; n: number }[] }> | null;
   game_backtest: Record<string, number> | null;
+  mercados_partido?: MercadosVal | null;
   calibration_state: { prop_shrink?: number; prop_mu_w?: number; pool_w?: number; alt_w?: number; td_w?: number; game_w?: number;
     bias?: Record<string, number>; history?: { at: string; note: string }[] } | null;
   parlays?: { mode: string; n: number; win: number; hit: number; avg_p: number }[];
@@ -29,7 +30,46 @@ const STAT_ES: Record<string, string> = {
   pass_ints: "Intercepciones", qb_rush_att: "Acarreos QB", qb_rush_yds: "Yardas tierra QB", pass_rush_yds: "Pase + carrera",
   targets: "Targets", receptions: "Recepciones", rec_yds: "Yardas recepción", rush_att: "Acarreos", rush_yds: "Yardas tierra",
   rush_rec_yds: "Yardas totales", tds: "Touchdowns",
+  total_alt: "Puntos (línea alterna)", team_total: "Puntos por equipo", td_total: "Touchdowns del partido", td_team: "Touchdowns por equipo",
+  fg_total: "Goles de campo del partido", fg_team: "Goles de campo por equipo", k_pts: "Puntos del pateador", k_fg: "Goles de campo del pateador",
+  h1_total: "Puntos 1ª mitad", h1_ml: "Ganador 1ª mitad", margen: "Margen de victoria",
 };
+
+type MercadosVal = { partidos?: number; temporadas?: number[] | string; familias: { mercado: string; veredicto: string; mejora_pct: number | null;
+  error_calibracion: number | null; n: number | null }[] };
+const VER_TXT: Record<string, string> = { fiable: "text-good", aceptable: "text-ink", "igual que la casa": "text-ink2", "casi azar": "text-mute" };
+
+function MercadosValidacion({ v }: { v: MercadosVal }) {
+  return (
+    <section>
+      <SectionTitle>Mercados del partido · validación con {v.partidos?.toLocaleString("es-MX") ?? "—"} partidos reales</SectionTitle>
+      <div className="card overflow-x-auto">
+        <table className="w-full min-w-[520px] text-sm">
+          <thead>
+            <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-mute">
+              <th className="px-4 py-2.5 font-semibold">Mercado</th><th className="px-3 py-2.5 font-semibold">Veredicto</th>
+              <th className="px-3 py-2.5 text-right font-semibold">Mejora vs promedio de la liga</th>
+              <th className="px-4 py-2.5 text-right font-semibold">Error de calibración</th>
+            </tr>
+          </thead>
+          <tbody>
+            {v.familias.map((f) => (
+              <tr key={f.mercado} className="border-b border-line last:border-0">
+                <td className="px-4 py-2 text-ink">{f.mercado}</td>
+                <td className={`px-3 py-2 font-semibold ${VER_TXT[f.veredicto] ?? "text-ink2"}`}>{f.veredicto}</td>
+                <td className="px-3 py-2 text-right tnum">{f.mejora_pct == null ? "—" : `${f.mejora_pct >= 0 ? "+" : ""}${f.mejora_pct.toFixed(2)}%`}</td>
+                <td className="px-4 py-2 text-right tnum text-ink2">{f.error_calibracion == null ? "—" : `${(f.error_calibracion * 100).toFixed(1)} pts`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-xs text-ink2">Cada partido de 2019 a hoy se volvió a simular sin ver su resultado. «Mejora» compara la probabilidad de Cinna
+        contra decir siempre el promedio de la liga. Touchdowns, 1ª mitad y margen sí dependen del partido; los goles de campo casi no (por eso no se
+        etiquetan como pick). De estos mercados no hay historial de momios: se validó la probabilidad, no la ganancia.</p>
+    </section>
+  );
+}
 
 export default function PerformancePage() {
   const { data, isLoading } = useApi<Perf>("/api/performance");
@@ -116,6 +156,8 @@ export default function PerformancePage() {
           </div>
         </div>
       </div>
+
+      {data.mercados_partido?.familias?.length ? <MercadosValidacion v={data.mercados_partido} /> : null}
 
       <section>
         <SectionTitle>Validación con temporadas pasadas (sin ver el futuro)</SectionTitle>

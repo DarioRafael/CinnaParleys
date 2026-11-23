@@ -58,13 +58,13 @@ Las reglas de cómo debe responder están en `CLAUDE.md`.
 | Pantalla | Qué muestra |
 |---|---|
 | Semana | Saludo de Cinna, partidos, probabilidades, las picks más seguras y los parlays de Cinna |
-| Partido | Ofensiva vs defensa, 20,000 simulaciones, **comparador de 8 casas**, jugadores, picks, lesiones y noticias |
+| Partido | Ofensiva vs defensa, 20,000 simulaciones, **comparador de 8 casas**, **Mercados** (touchdowns, goles de campo, puntos alternos, pateadores, 1ª mitad, margen, tiempo extra, con calculadora de cualquier línea), jugadores, picks, lesiones y noticias |
 | Picks | Seguras / Valor / Arriesgadas con **mejor precio, valor esperado, apuesta sugerida**, sello **Élite**, historial real de picks así y **rango probable** (dónde cae el jugador 8 de cada 10 partidos vs la línea) |
 | **Parlays** | Armados solos: La más segura, Balanceada, Bomba, Mismo partido, Touchdowns, **Solo Élite**, **Pago objetivo** (el más probable para el pago que pidas) y **Guion del partido**. Opción *blindados* (sólo picks sanos y estables) y **cartera** (probabilidad de que salga al menos uno) |
 | **Draftea** | Buscador con autocompletar: eliges jugador o equipo, la estadística (yardas de pase/tierra/recepción, recepciones, acarreos, pases completos, TD, spread, total, ganador, puntos del equipo) y la línea ya viene puesta (la de Playdoit o el consenso). Momio opcional (1.80x o -110). Probabilidad al instante, línea blanda y probabilidad de que salgan todas juntas |
 | Jugador | Proyección, historial vs la línea, **mercado de 8 casas vs Cinna**, **consenso de expertos** y calculadora para tu línea de Draftea |
 | Calculadora | Escribe cualquier línea (jugador o partido) y te da la probabilidad y el momio justo |
-| Equipos | Ranking de poder ajustado por rival |
+| Equipos | Ranking de poder ajustado por rival con el **próximo partido** de cada equipo; al tocar uno se abre su **ficha**: próximo partido con la predicción y accesos a mercados/picks/súper pick, resultados de la temporada (cubrió o no, qué le daba Cinna), en qué es bueno y en qué no, jugadores clave con su proyección, picks, lesiones y noticias |
 | Noticias | Noticias con impacto, qué cambió Cinna y bajas clave (ordenadas por importancia del jugador) |
 | Rendimiento | Aciertos y **retorno** con líneas reales de cierre (Más/Menos, escaleras, TDs), parlays élite, parlays del mismo partido, calibración, pesos aprendidos |
 
@@ -299,11 +299,139 @@ Las reglas de cómo debe responder están en `CLAUDE.md`.
     busca partidos de semanas anteriores sin final (5+ h después del kickoff) y baja su marcador de ESPN
     (`_catch_up_stale` en `brain/pipeline.py`).
 
+## Escanear un parlay (captura de pantalla)
+
+Botón **Escanear parlay** arriba (o pega una captura con **Ctrl+V** en cualquier pantalla): lee la captura de Draftea,
+Playdoit o cualquier casa con OCR **local y gratis** (RapidOCR, modelos incluidos; la imagen no sale de tu PC), arma
+cada pata aunque la casa muestre jugador, estadística y línea en renglones separados ("Más de 69.5" → 70+), lee el
+monto y el pago si aparecen y da: probabilidad de cada pata con su semáforo y razones, probabilidad de que salgan
+todas (simulación con correlaciones), pago justo, veredicto (con valor / justo / caro) y **la pata que más pesa** (cuánto
+sube el parlay sin ella). Lo leído se puede corregir a mano y guardar en Mis apuestas. `brain/escaner.py`,
+`/api/escanear` (cuerpo = la imagen) y `/api/analizar_parlay`. Por ahora evalúa escalones X+ (los Menos se avisan).
+
+## Parlays armados y súper pick entre partidos
+
+- **Armados** (pestaña del partido y pantalla Armados): hasta seis opciones por partido — **Seguro**, **Del partido**
+  (un mercado de cada tipo: ganador o ventaja, puntos, touchdowns, goles de campo), **Partido cerrado** (con «Menos»),
+  **Si gana el favorito** (gana + lo que en la simulación suele venir con eso), **Balanceado** (Élite de ancla) y
+  **Buen pago**. Cada pata se toca para ver por qué está, qué la ayuda, qué la complica y en qué caso se cae.
+- **Picks → Partidos de la jornada**: eliges uno o varios partidos; la lista se filtra y aparece el **súper pick** entre
+  ellos (Súper seguro, Seguro 2x+, Balanceado 3.5x+, Buen pago 5x+; 1-2 patas por partido). Con un solo partido muestra
+  sus armados. La flecha de cada partido lo abre. `/api/combinar?games=…`, `brain/armados.py: combinar`.
+- La probabilidad conjunta sale de la simulación de cada partido (ahora guarda también touchdowns y goles de campo).
+  Se evitan patas que dicen casi lo mismo («NYG 2+ TD» con «NYG más de 16.5 pts», correlación > 0.45): inflarían la
+  probabilidad y la casa no paga el producto de los momios por algo que es casi una sola apuesta.
+
+### «Volver a pensar» y armados a tu medida
+
+En Armados (y en la pestaña Armados de cada partido): **Volver a pensar** guarda cómo están los armados, trae lo
+último (lesiones, inactivos, noticias, líneas de Playdoit) y vuelve a armar; luego cada partido dice **qué cambió**
+(patas que salieron y por qué, momios que se movieron, patas nuevas). Cada perfil trae **hasta 3 opciones** que
+comparten como mucho una pata. **A tu medida**: número de patas, pago mínimo, tipos de pata (jugadores, del partido,
+anota TD) y jugadores fuera → un perfil propio con 3 opciones. **Juntar varios partidos** también está ahí.
+`brain/armados.py` (`_todas`, `_opciones`, `cambios`), `GET /api/armados?patas&pago&tipos&excluir`,
+`POST /api/armados/repensar`, kv `armados_antes`.
+
+Semana en Playdoit (`/api/playdoit/semana`, en la pantalla Conectar Playdoit): los partidos que faltan de la jornada
+con su enlace directo a Playdoit; un clic abre el partido y la extensión lo manda. El botón **«Abrir el siguiente que falta»** abre
+uno por clic en la misma pestaña de Playdoit (cuando ya están todos, actualiza el que llegó hace más tiempo). No se abre nada solo: un robot que
+visite Playdoit por su cuenta sería justo lo que la casa bloquea y pondría en riesgo la cuenta del usuario.
+
+Historial de Playdoit: cada versión distinta de los momios de un partido que manda la extensión se guarda comprimida
+en `data/raw/pd_historial/{id}/{fecha}.json.gz` (para medir después dónde paga de más o de menos).
+
+### Conectar Playdoit (extensión «Cinna»)
+
+Playdoit pone sus mercados en un marco aparte dentro de su página, así que ni copiar la página ni un marcador los
+pueden leer. La carpeta `extension/` es una extensión de Brave/Chrome (se carga una vez: `brave://extensions` → Modo
+de desarrollador → Cargar extensión sin empaquetar → `extension`). Cuando el usuario abre un partido en Playdoit, la
+extensión copia los datos que Playdoit ya le mandó a su navegador (`GetEventDetails`, `GetEvents`) y los manda a
+`POST /api/playdoit/captura`; nunca pide nada a Playdoit por su cuenta. Se guardan como el caché de siempre
+(`data/raw/pd_event_{id}.json`, índice `pd_capturados.json`) y la actualización los usa como antes del bloqueo
+(líneas de jugador, escaleras, mercados del partido, momios). Una actualización por tanda: 45 s después de la primera
+captura nueva y como mucho una cada 5 minutos. Pantalla **/importar** («Conectar Playdoit») con el estado en vivo.
+
+### «Enviar a Cinna»: las líneas exactas de tu casa
+
+Página **/importar** (también enlazada desde Armados y la pestaña Armados del partido): un marcador que se arrastra a
+la barra del navegador. Con el partido abierto en Playdoit o Team Mexico (y los mercados desplegados), un clic manda
+el texto de la página a la app: ganador, hándicap, total, total por equipo, touchdowns, goles de campo, 1ª mitad y
+escalones / Más/Menos de jugador, con sus momios. Ese partido usa esas líneas en Mercados y en los armados (mandan
+sobre el patrón). No es un robot ni rodea protecciones: es el navegador del usuario y lo que ya tiene en pantalla.
+`brain/importar.py`, `POST /api/importar_casa`, kv `casa_partido`; el último texto recibido queda en
+`data/raw/importar_ultimo.json` para afinar el lector si una casa cambia su formato.
+
+### Sólo líneas que la casa publica
+
+Mientras Playdoit no deje leer sus momios, los mercados del partido usan **el menú de Playdoit**, medido en sus 60
+eventos de octubre guardados en `data/raw/pd_event_*.json`: todo sale del total y el hándicap principales.
+
+| Mercado | Qué publica Playdoit |
+|---|---|
+| Total del partido | principal ±10, de 1 en 1 |
+| Total por equipo | su principal ±2 (5 líneas; p. ej. NYG 19.5–23.5) |
+| Hándicap | principal ±11 |
+| Touchdowns del partido | 3 líneas; la de en medio ≈ 0.16·total − 2.3 (93% exacto) |
+| Touchdowns por equipo | **una** línea ≈ 0.14·total del equipo − 0.7 (83-88% exacto) |
+| Goles de campo | del partido 2.5 / 3.5 / 4.5; por equipo sólo 1.5 |
+| 1ª mitad | 5 líneas alrededor de 0.48·total + 0.65 |
+
+El pago estimado usa el margen real que cobra (suma de probabilidades ≈ 1.07; 1.09 en touchdowns del partido).
+`brain/anotaciones.py: menu_casa, dec_casa`. Si Playdoit vuelve a responder, se usan sus líneas y momios en vivo.
+
+## Mercados del partido (touchdowns, goles de campo, puntos, pateadores, 1ª mitad…)
+
+Pestaña **Mercados** de cada partido (y filtro «Mercados» en Picks). Cubre lo que se apuesta del partido además de los
+jugadores: **puntos** (cualquier línea: "menos de cuántos puntos"), **puntos por equipo**, **touchdowns** (del partido y
+por equipo), **goles de campo**, **pateadores** (puntos de patada, con su nombre), **primera mitad** (quién va ganando y
+puntos), **margen de victoria** y **tiempo extra**. De cada mercado se ve:
+
+- el **aproximado**: cuánto espera Cinna, lo más probable y el rango normal (8 de cada 10 partidos);
+- la probabilidad de Más/Menos de cada línea con su **momio justo** (si tu casa paga mejor, hay valor);
+- en puntos, los **escalones seguros**: "Menos de X" y "Más de X" al 70 / 80 / 85 / 90 %;
+- una **calculadora** para la línea que veas en tu casa: escribes la línea y lo que te pagan y dice si conviene.
+
+Todo sale del mismo simulador de 20,000 partidos (cada serie termina en touchdown, gol de campo o nada), mezclado con
+la frecuencia histórica según lo que demostró cada mercado al volver a simular **2,068 partidos de 2019 a hoy sin ver
+su resultado** (`scripts/validar_anotaciones.py` → `data/models/anotaciones_calib.json`, se rehace cada semana):
+
+| Mercado | Veredicto | Mejora vs promedio de la liga |
+|---|---|---|
+| Touchdowns por equipo / del partido | **fiable** | +7.5 % / +5.1 % |
+| Ganador de la 1ª mitad, margen de victoria | **fiable** | +4.1 % |
+| Puntos del pateador | aceptable | +1.1 % |
+| Goles de campo, tiempo extra | casi azar | +0.2 a +0.5 % |
+| Puntos alternos, por equipo y de la 1ª mitad | igual que la casa | ≈ 0 % contra la línea |
+
+Qué significa: los touchdowns sí dependen del partido y Cinna los predice mejor que el promedio; los **goles de campo
+casi no** (por eso nunca salen como pick con nivel, sólo su probabilidad); los puntos alternos están bien calibrados pero
+no le ganan a la línea de la casa: sirven para saber qué tan seguro es un escalón. De estos mercados no hay historial
+de momios, así que se validó **la probabilidad, no la ganancia**; cada pick queda en la bitácora y se califica solo con
+el marcador real (touchdowns, goles de campo y medio tiempo de las anotaciones de ESPN; 120 de 120 equipos coinciden con
+las estadísticas oficiales). No entran a los parlays armados (su correlación con los jugadores aún no se mide).
+
+**Playdoit**: su página bloquea las consultas automáticas (Cloudflare). Cinna lo respeta: si recibe el bloqueo deja de
+consultar 6 horas y no intenta rodearlo. Mientras tanto se usa la calculadora de cada mercado, el escáner de capturas
+o `lineas_casa`. Las escaleras estimadas de jugador siguen el patrón real de Playdoit: yardas por recepción y por
+carrera desde **20+ de 10 en 10**, recepciones 2+/4+/6+, pase desde 100+ de 25 en 25.
+
+`brain/anotaciones.py`, `/api/mercados/{partido}` y `/api/mercados/{partido}/calc?clave=&linea=`, herramienta
+`mercados_partido` del asistente, `web/components/mercados.tsx`.
+
+## Rendimiento
+
+Las pantallas pesadas (picks, súper parlay, guiones, plan, rendimiento) se calculan **una vez por versión de los datos**
+y se precalientan en segundo plano tras cada actualización (`cached` en `api/main.py`): de 6.6 s a milisegundos.
+La versión cambia con cada actualización, el marcador en vivo, un partido que empieza o se califica y lo que guarda
+el usuario (mínimos de Draftea, apuestas). Respuestas comprimidas (gzip). En la web: precarga de datos al pasar el
+mouse por el menú y en segundo plano, listas largas por tandas (`useProgresivo`) con `content-visibility`, filtros con
+`useTransition`, y cambio de tema con View Transitions y bloqueo contra clics repetidos.
+
 ## Diseño (CinnaParleys)
 
 - **Tipografías** (Google Fonts, vía `next/font`): **Fredoka** para títulos y la marca (redonda, con carácter) y
   **Nunito** para el cuerpo y los números (suave y muy legible). JetBrains Mono sólo para código.
-- **Paleta**: tema claro «Crema» por defecto (masa, canela, glaseado rosa y cielo) y tema oscuro «Chocolate»
+- **Paleta**: tema claro «Crema» por defecto (fondo liso casi blanco y cálido, tarjetas blancas; canela y rosa sólo como acentos) y tema oscuro «Chocolate» (espresso neutro)
   (botón luna/sol; se guarda en `localStorage` como `cinna_theme` y se aplica antes de pintar, sin parpadeo).
   Contrastes de texto medidos con WCAG (texto normal ≥ 4.4:1). Tokens en `web/app/globals.css`.
 - **Marca**: logo de balón con espiral de canela (`components/brand.tsx`, `app/icon.svg`) y la mascota **Cinna**

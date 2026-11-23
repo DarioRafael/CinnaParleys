@@ -6,15 +6,19 @@ Uso:  .venv\\Scripts\\python.exe scripts\\crear_mcp.py
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def main() -> None:
-    py = ROOT / ".venv" / "Scripts" / "pythonw.exe"
-    if not py.exists():
-        py = ROOT / ".venv" / "Scripts" / "python.exe"
+    if os.name == "nt":
+        py = ROOT / ".venv" / "Scripts" / "pythonw.exe"       # sin ventana en Windows
+        if not py.exists():
+            py = ROOT / ".venv" / "Scripts" / "python.exe"
+    else:
+        py = ROOT / ".venv" / "bin" / "python"
     cfg = {"mcpServers": {"cerebro-nfl": {"type": "stdio", "command": str(py),
                                           "args": [str(ROOT / "asistente" / "mcp_server.py")], "env": {}}}}
     (ROOT / ".mcp.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")

@@ -47,6 +47,43 @@ export function VideoProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** ¿El navegador reproduce H.264 (el formato de ESPN)? En varias distros de Linux no viene incluido. */
+function soportaH264() {
+  try {
+    return document.createElement("video").canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"') !== "";
+  } catch {
+    return true;
+  }
+}
+
+/** Reproductor: usa el mp4 de ESPN; si el navegador no puede, pide a la API la versión WebM (convertida al vuelo). */
+function Reproductor({ c }: { c: Clip }) {
+  const [modo, setModo] = useState<"mp4" | "webm" | "error">("mp4");
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => { setModo(soportaH264() ? "mp4" : "webm"); setMsg(null); }, [c.id]);
+  const fallo = () => {
+    if (modo === "mp4") { setModo("webm"); return; }
+    setModo("error");
+    fetch("/api/video/soporte").then((r) => r.json()).then((d: { ffmpeg?: boolean }) => {
+      if (!d.ffmpeg) setMsg("Tu navegador no reproduce el formato de ESPN (H.264) y falta ffmpeg para convertirlo. En Linux: sudo apt install ffmpeg, y vuelve a abrir el video.");
+    }).catch(() => undefined);
+  };
+  if (modo === "error") {
+    return (
+      <div className="grid aspect-video w-full place-items-center bg-black px-6 text-center text-sm text-white/85">
+        <div className="max-w-md space-y-3">
+          <p>{msg ?? "No se pudo reproducir este video aquí."}</p>
+          {c.web && <a href={c.web} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-full bg-white px-4 py-2 text-xs font-bold text-[#2a1e17]">Verlo en ESPN <ExternalLink size={12} /></a>}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <video key={`${c.id}-${modo}`} src={modo === "webm" ? `/api/video/${c.id}/webm` : c.mp4} poster={c.poster ?? undefined}
+      controls autoPlay playsInline onError={fallo} className="aspect-video w-full bg-black" />
+  );
+}
+
 function Lightbox({ list, idx, onClose, onNav }: { list: Clip[]; idx: number; onClose: () => void; onNav: (d: number) => void }) {
   const c = list[idx];
   useEffect(() => {
@@ -65,13 +102,13 @@ function Lightbox({ list, idx, onClose, onNav }: { list: Clip[]; idx: number; on
       <button className="absolute inset-0 bg-[rgba(24,14,10,0.78)] backdrop-blur-sm" aria-label="Cerrar video" onClick={onClose} />
       <div className="enter relative w-full max-w-4xl">
         <div className="mb-2 flex items-center justify-between gap-3 px-1 text-white">
-          <span className="flex items-center gap-2 font-hand text-xl">
+          <span className="flex items-center gap-2 text-sm font-bold">
             <Duo icon={Popcorn} tone="lila" size={26} /> {list.length > 1 ? `${idx + 1} de ${list.length}` : "A verlo"}
           </span>
           <button onClick={onClose} className="rounded-full bg-white/15 p-2 hover:bg-white/25" aria-label="Cerrar"><X size={18} /></button>
         </div>
         <div className="overflow-hidden rounded-3xl bg-black shadow-2xl ring-4 ring-[var(--pink-soft)]">
-          <video key={c.id} src={c.mp4} poster={c.poster ?? undefined} controls autoPlay playsInline className="aspect-video w-full bg-black" />
+          <Reproductor c={c} />
         </div>
         <div className="mt-3 rounded-2xl bg-s1 p-4">
           <div className="flex flex-wrap items-center gap-2 text-xs text-mute">
@@ -169,7 +206,7 @@ export function VideoRail({ clips, title, right }: { clips: Clip[]; title?: Reac
   return (
     <section>
       <div className="mb-3 flex items-end justify-between gap-3">
-        <h2 className="flex items-center gap-2 font-display text-[13px] font-medium uppercase tracking-[0.12em] text-ink2">
+        <h2 className="flex items-center gap-2.5 font-display text-[17px] font-bold tracking-tight text-ink">
           <IconTile icon={Popcorn} tone="lila" size={26} className="-my-1" /> {title ?? "Videos"}
         </h2>
         <div className="flex items-center gap-2">

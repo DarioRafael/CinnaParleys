@@ -33,7 +33,7 @@ def _stat_de(t: str) -> str | None:
         return "pass_yds"
     if "acarre" in t:
         return "rush_att"
-    if "tierra" in t or "carrera" in t or "rush" in t:
+    if "tierra" in t or "terrestr" in t or "carrera" in t or "rush" in t:
         return "rush_yds"
     if "recepcion" in t and "yd" not in t and "yard" not in t:
         return "receptions"
@@ -69,24 +69,47 @@ def parse_patas(texto: str) -> tuple[list[dict], list[str]]:
     return patas, dudas
 
 
-def _evaluar(patas: list[dict]) -> tuple[list[dict], float | None]:
+def _probs(patas: list[dict]) -> tuple[list[dict], list[tuple[str, np.ndarray | None]]]:
+    """Probabilidad de cada pata y sus aciertos en la simulación del partido (para la conjunta con correlaciones)."""
     _, dist = PR.load()
-    by_game: dict[str, np.ndarray] = {}
-    out = []
+    out, hits = [], []
     for l in patas:
         r = db.query("SELECT data FROM player_proj WHERE game_id=:g AND player_id=:p", g=l["game_id"], p=l["player_id"])
         e = (db.loads(r[0]["data"], {}).get("stats") or {}).get(l["stat"]) if r else None
         pr = float(ES.p_step(e, l["stat"], dist, l["x"])) if e and e.get("mu") else None
         out.append({**l, "prob": round(pr, 3) if pr is not None else None, "titulo": f"{l['name']}: {l['x']}+ {LABEL.get(l['stat'], l['stat'])}"})
-        if pr is None:
+        h = None
+        if pr is not None:
+            J = JT.load(l["game_id"])
+            leg = {"game_id": l["game_id"], "player_id": l["player_id"], "market": l["stat"], "kind": "alt", "side": "over",
+                   "line": l["x"] - 0.5, "pick_id": out[-1]["titulo"]}
+            h = JT.hits(J, dist, leg, pr) if J is not None else None
+        hits.append((l["game_id"], h))
+    return out, hits
+
+
+def _conjunta(out: list[dict], hits: list[tuple[str, np.ndarray | None]], skip: int | None = None) -> float | None:
+    """Probabilidad de que salgan todas (menos la pata `skip`): mismas simulaciones por partido = correlaciones reales."""
+    by_game: dict[str, np.ndarray] = {}
+    indep, n = 1.0, 0
+    for i, (x, (g, h)) in enumerate(zip(out, hits)):
+        if i == skip:
             continue
-        J = JT.load(l["game_id"])
-        leg = {"game_id": l["game_id"], "player_id": l["player_id"], "market": l["stat"], "kind": "alt", "side": "over",
-               "line": l["x"] - 0.5, "pick_id": out[-1]["titulo"]}
-        h = JT.hits(J, dist, leg, pr) if J is not None else None
-        if h is not None:
-            by_game[l["game_id"]] = h if l["game_id"] not in by_game else (by_game[l["game_id"]] & h)
-    pj = float(np.prod([h.mean() for h in by_game.values()])) if by_game and all(x["prob"] is not None for x in out) else None
+        if x["prob"] is None:
+            return None
+        n += 1
+        if h is None:                     # sin simulación del partido: se toma como independiente
+            indep *= x["prob"]
+            continue
+        by_game[g] = h if g not in by_game else (by_game[g] & h)
+    if not n:
+        return None
+    return float(np.prod([h.mean() for h in by_game.values()]) * indep) if by_game else indep
+
+
+def _evaluar(patas: list[dict]) -> tuple[list[dict], float | None]:
+    out, hits = _probs(patas)
+    pj = _conjunta(out, hits)
     # semáforo del súper parlay para cada pata (rival, Kalshi, salud, clima, trampas)
     try:
         from . import super_parlay as SP

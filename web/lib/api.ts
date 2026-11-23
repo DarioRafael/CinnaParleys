@@ -1,6 +1,6 @@
 "use client";
 
-import useSWR, { SWRConfiguration } from "swr";
+import useSWR, { SWRConfiguration, preload } from "swr";
 
 export const fetcher = async (url: string) => {
   const r = await fetch(url);
@@ -22,7 +22,16 @@ export async function post<T = unknown>(url: string, body?: unknown): Promise<T>
 }
 
 export function useApi<T = any>(url: string | null, cfg?: SWRConfiguration) {
-  return useSWR<T>(url, fetcher, { revalidateOnFocus: true, keepPreviousData: true, ...cfg });
+  // sin recargar todo al volver a la ventana (eso causaba tirones); los datos se renuevan solos
+  // cuando termina una actualización (ver TopBar) y con el refreshInterval de cada vista.
+  return useSWR<T>(url, fetcher, { revalidateOnFocus: false, dedupingInterval: 15000, keepPreviousData: true, ...cfg });
+}
+
+/** Baja de antemano los datos de una pantalla (al pasar el mouse por el menú): al entrar ya están listos. */
+export function precargar(keys: string[] | undefined) {
+  for (const k of keys ?? []) {
+    try { preload(k, fetcher); } catch { /* ignorar */ }
+  }
 }
 
 /* ---------------------------------------------------------------- tipos */
@@ -71,6 +80,7 @@ export type Pick = {
   game_label: string; availability?: { p_play: number; status: string };
   reasons?: { facts?: string[]; up?: Reason[]; down?: Reason[] } | string[];
   implied?: number | null; odds?: number | null; home?: string; away?: string;
+  extra?: boolean;       // mercado del partido (touchdowns, puntos alternos…): se muestra, no entra a los parlays
 };
 
 /* ---------------------------------------------------------------- formato */

@@ -1,15 +1,16 @@
 "use client";
 
 import { Duo, IconTile, PIcon, Tone } from "./icons";
-import { Alarm, Calculator, ChartLineUp, ChatsCircle, Football, FootballHelmet, Newspaper, NotePencil, Popcorn, Target, Ticket } from "@phosphor-icons/react";
+import { Alarm, Calculator, Cards, ChartLineUp, ChatsCircle, Football, FootballHelmet, Newspaper, NotePencil, Popcorn, Target, Ticket } from "@phosphor-icons/react";
 import clsx from "clsx";
 import { Menu as MenuIcon, Play, RefreshCw, Search, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { mutate } from "swr";
-import { Team, ago, post, useApi } from "@/lib/api";
+import { Team, ago, post, precargar, useApi } from "@/lib/api";
 import { CinnaBun, CinnaLogo, Mood, Wordmark } from "./brand";
+import { BotonEscanear, EscanerProvider } from "./escaner";
 import { ParlayProvider } from "./parlay";
 import { ThemeSwitch } from "./theme";
 import { Clip, VideoProvider, dur, useVideo } from "./videos";
@@ -30,6 +31,7 @@ const SECTIONS: { title: string; items: NavItem[] }[] = [
   {
     title: "a jugar",
     items: [
+      { href: "/armados", label: "Armados", hint: "Parlays listos por partido", icon: Cards, tone: "rosa" },
       { href: "/parlays", label: "Parlays", hint: "Súper parlay y guiones", icon: Ticket, tone: "miel" },
       { href: "/draftea", label: "Draftea", hint: "Tus líneas, revisadas", icon: NotePencil, tone: "menta" },
       { href: "/calculadora", label: "Calculadora", hint: "Probabilidad de una línea", icon: Calculator, tone: "cielo" },
@@ -46,6 +48,21 @@ const SECTIONS: { title: string; items: NavItem[] }[] = [
 ];
 const ALL = SECTIONS.flatMap((s) => s.items);
 const MOBILE = ["/", "/picks", "/parlays", "/videos"].map((h) => ALL.find((x) => x.href === h)!);
+
+// datos que usa cada pantalla (mismas llaves que las páginas): se bajan al pasar el mouse por el menú
+const PRECARGA: Record<string, string[]> = {
+  "/": ["/api/week", "/api/picks?tier=segura&limit=60", "/api/changes?limit=4", "/api/romper?limit=8", "/api/videos?limit=14",
+    "/api/parlays?mode=top_elite&legs=2&top=1&casa=Draftea", "/api/parlays?mode=top_elite&legs=3&top=1&casa=Draftea",
+    "/api/parlays?mode=balanceada&top=1&casa=Draftea"],
+  "/picks": ["/api/picks?limit=500"],
+  "/noticias": ["/api/news?only_impact=true&limit=80", "/api/changes?limit=40", "/api/injuries?key_only=true", "/api/videos?limit=16"],
+  "/videos": ["/api/videos?limit=160"],
+  "/parlays": ["/api/week", "/api/parlays?mode=top_elite&casa=Draftea", "/api/super_parlay", "/api/guiones?n=8&nivel=0.65",
+    "/api/plan?banca=1000&riesgo=conservador", "/api/mis_apuestas"],
+  "/draftea": ["/api/draftea/catalogo", "/api/draftea"],
+  "/equipos": ["/api/teams"],
+  "/rendimiento": ["/api/performance", "/api/autopsias", "/api/categorias"],
+};
 
 const isActive = (href: string, path: string) =>
   href === "/" ? path === "/" || path.startsWith("/partido") : path.startsWith(href);
@@ -80,6 +97,21 @@ export function useMood(m?: MenuData): Mood {
 export function Shell({ children }: { children: ReactNode }) {
   const path = usePathname();
   const [drawer, setDrawer] = useState(false);
+  useEffect(() => {
+    // cuando la página ya cargó y está tranquila, baja los datos de las demás pantallas (una por una)
+    const orden = ["/picks", "/parlays", "/noticias", "/videos", "/rendimiento", "/equipos", "/draftea", "/"];
+    let i = 0;
+    let t: ReturnType<typeof setTimeout>;
+    const idle = (cb: () => void) => ("requestIdleCallback" in window
+      ? (window as Window & { requestIdleCallback: (f: () => void) => number }).requestIdleCallback(cb) : setTimeout(cb, 200));
+    const siguiente = () => {
+      if (i >= orden.length) return;
+      precargar(PRECARGA[orden[i++]]);
+      t = setTimeout(() => idle(siguiente), 700);
+    };
+    t = setTimeout(() => idle(siguiente), 3500);
+    return () => clearTimeout(t);
+  }, []);
   useEffect(() => setDrawer(false), [path]);
   useEffect(() => {
     if (!drawer) return;
@@ -91,6 +123,7 @@ export function Shell({ children }: { children: ReactNode }) {
   return (
     <ParlayProvider>
       <VideoProvider>
+      <EscanerProvider>
         <div className="flex min-h-screen">
           <aside className="side side-edge sticky top-0 z-20 hidden h-screen w-[272px] shrink-0 md:block">
             <SideMenu path={path} />
@@ -112,40 +145,29 @@ export function Shell({ children }: { children: ReactNode }) {
             <main key={path} className="enter mx-auto w-full max-w-[1400px] flex-1 px-4 pb-28 pt-5 md:px-8 md:pb-12">{children}</main>
           </div>
 
-          <nav className="fixed inset-x-3 bottom-3 z-30 flex rounded-[22px] border border-line bg-s1/95 p-1 shadow-xl backdrop-blur md:hidden">
-            {MOBILE.map(({ href, label, icon, tone }) => {
+          <nav className="fixed inset-x-3 bottom-3 z-30 flex rounded-2xl border border-line bg-s1/95 p-1 shadow-lg backdrop-blur md:hidden">
+            {MOBILE.map(({ href, label, icon }) => {
               const active = isActive(href, path);
               return (
-                <Link key={href} href={href} data-active={active}
-                  className={clsx("nav-item flex flex-1 flex-col items-center gap-0.5 rounded-2xl py-1.5 text-[10.5px] font-bold transition-colors",
+                <Link key={href} href={href} data-active={active} onTouchStart={() => precargar(PRECARGA[href])}
+                  className={clsx("nav-item flex flex-1 flex-col items-center gap-0.5 rounded-xl py-1.5 text-[10.5px] font-semibold transition-colors",
                     active ? "bg-[var(--hero-to)] text-brand" : "text-mute")}>
-                  <Duo icon={icon} tone={tone} size={24} className="nav-icon" /> {label}
+                  <Duo icon={icon} tone={active ? "canela" : "neutro"} size={24} className="nav-icon" /> {label}
                 </Link>
               );
             })}
-            <button onClick={() => setDrawer(true)} className="flex flex-1 flex-col items-center gap-0.5 rounded-2xl py-1.5 text-[10.5px] font-bold text-mute">
+            <button onClick={() => setDrawer(true)} className="flex flex-1 flex-col items-center gap-0.5 rounded-xl py-1.5 text-[10.5px] font-semibold text-mute">
               <span className="grid h-6 w-6 place-items-center"><MenuIcon size={20} /></span> Menú
             </button>
           </nav>
         </div>
+      </EscanerProvider>
       </VideoProvider>
     </ParlayProvider>
   );
 }
 
 /* ------------------------------------------------------------------ menú lateral */
-const DRIPS = [{ x: 14, w: 10, h: 40 }, { x: 52, w: 12, h: 27 }, { x: 92, w: 9, h: 48 }, { x: 134, w: 13, h: 31 },
-  { x: 176, w: 10, h: 52 }, { x: 214, w: 12, h: 29 }, { x: 248, w: 9, h: 38 }];
-function glazePath() {
-  let d = "M0 0V18";
-  let prev = 0;
-  for (const { x, w, h } of DRIPS) {
-    d += ` Q${(prev + x) / 2} 25 ${x} 18 C${x} ${h * 0.6} ${x} ${h} ${x + w / 2} ${h} C${x + w} ${h} ${x + w} ${h * 0.6} ${x + w} 18`;
-    prev = x + w;
-  }
-  return d + ` Q${(prev + 272) / 2} 25 272 18 V0Z`;
-}
-const GLAZE = glazePath();
 
 function SideMenu({ path }: { path: string }) {
   const { data: m } = useMenu();
@@ -166,16 +188,11 @@ function SideMenu({ path }: { path: string }) {
   const mood = useMood(m);
   return (
     <div className="relative flex h-full flex-col">
-      {/* glaseado que gotea detrás del logo */}
-      <svg viewBox="0 0 272 56" preserveAspectRatio="none" className="glaze-drip pointer-events-none absolute inset-x-0 top-0 h-[56px] w-full" aria-hidden="true">
-        <path d={GLAZE} fill="currentColor" opacity="0.8" />
-      </svg>
-
       <Link href="/" className="group relative z-10 flex items-center gap-3 px-5 pb-3 pt-4">
-        <CinnaLogo size={44} className="transition-transform duration-500 [transition-timing-function:cubic-bezier(.34,1.6,.64,1)] group-hover:-rotate-[18deg] group-hover:scale-110" />
+        <CinnaLogo size={40} className="transition-transform duration-300 group-hover:-rotate-12" />
         <div>
           <Wordmark />
-          <div className="mt-0.5 -rotate-2 font-hand text-[17px] font-semibold leading-none text-brand">picks horneados con cariño</div>
+          <div className="mt-1 text-[10.5px] font-semibold uppercase leading-none tracking-[0.16em] text-mute">Análisis NFL</div>
         </div>
       </Link>
 
@@ -184,9 +201,9 @@ function SideMenu({ path }: { path: string }) {
       <nav className="no-scrollbar relative mt-3 min-h-0 flex-1 overflow-y-auto px-3 pb-2" aria-label="Secciones">
         <div ref={innerRef} className="relative">
           {pill && (
-            <div className="nav-pill pointer-events-none absolute inset-x-0 rounded-2xl bg-pill shadow-[0_1px_0_var(--border),0_8px_18px_-10px_rgba(var(--shadow-color),0.4)]"
+            <div className="nav-pill pointer-events-none absolute inset-x-0 rounded-xl bg-pill shadow-[0_1px_0_var(--border),0_8px_18px_-10px_rgba(var(--shadow-color),0.4)]"
               style={{ top: pill.top, height: pill.height }}>
-              <span className="absolute -left-3 top-1/2 h-7 w-1.5 -translate-y-1/2 rounded-r-full bg-pink" />
+              <span className="absolute -left-3 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-r-full bg-[var(--brand)]" />
             </div>
           )}
           {SECTIONS.map((sec, si) => (
@@ -197,17 +214,17 @@ function SideMenu({ path }: { path: string }) {
                 const badge = it.badge && m ? m.conteos[it.badge] : 0;
                 return (
                   <Link key={it.href} href={it.href} data-active={active} aria-current={active ? "page" : undefined} title={it.hint}
-                    className={clsx("nav-item relative z-10 flex items-center gap-3 rounded-2xl px-2 py-[5px] transition-colors",
+                    onMouseEnter={() => precargar(PRECARGA[it.href])} onFocus={() => precargar(PRECARGA[it.href])}
+                    className={clsx("nav-item relative z-10 flex items-center gap-3 rounded-xl px-2 py-[5px] transition-colors",
                       !active && "hover:bg-[var(--tile)]")}>
-                    <IconTile icon={it.icon} tone={it.tone} size={36} iconSize={21} iconClassName="nav-icon"
-                      className={active ? "shadow-[0_6px_14px_-8px_var(--ti)]" : undefined} />
+                    <IconTile icon={it.icon} tone={active ? "canela" : "neutro"} size={34} iconSize={19} iconClassName="nav-icon" />
                     <span className="min-w-0 flex-1">
-                      <span className={clsx("block text-[14px] leading-tight", active ? "font-extrabold text-ink" : "font-semibold text-ink2")}>{it.label}</span>
+                      <span className={clsx("block text-[14px] leading-tight", active ? "font-semibold text-ink" : "font-medium text-ink2")}>{it.label}</span>
                       <span className="nav-hint"><span><span className="block truncate pt-0.5 text-[11.5px] text-mute">{it.hint}</span></span></span>
                     </span>
                     {badge ? (
-                      <span className={clsx("rounded-full px-1.5 py-px text-[10.5px] font-extrabold tnum",
-                        it.badge === "cambios" ? "bg-pink text-[#3a2318]" : "bg-brand-soft text-brand")}
+                      <span className={clsx("rounded-md px-1.5 py-px text-[10.5px] font-semibold tnum",
+                        it.badge === "cambios" ? "bg-[var(--accent-soft)] text-accent" : "bg-s2 text-ink2")}
                         title={it.badge === "cambios" ? `${badge} cambios por noticias en las últimas 12 h` : "Picks seguras"}>
                         {it.badge === "cambios" ? "nuevo" : badge}
                       </span>
@@ -234,14 +251,7 @@ function SideMenu({ path }: { path: string }) {
 }
 
 function SectionLabel({ children }: { children: ReactNode }) {
-  return (
-    <div className="relative mb-0.5 inline-block px-2 font-hand text-[18px] font-semibold leading-tight text-brand">
-      {children}
-      <svg viewBox="0 0 80 6" className="absolute -bottom-0.5 left-2 h-[5px] w-[calc(100%-12px)] text-pink" preserveAspectRatio="none" aria-hidden="true">
-        <path d="M1 4 Q10 1 20 3.5 T40 3.5 T60 3.5 T79 3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      </svg>
-    </div>
-  );
+  return <div className="mb-1 px-2 text-[10.5px] font-semibold uppercase tracking-[0.14em] text-mute">{children}</div>;
 }
 
 function countdown(ms: number) {
@@ -274,11 +284,11 @@ function KickoffTicket({ m }: { m?: MenuData }) {
   const nx = m.proximo;
   const href = g ? `/partido/${g.game_id}` : nx ? `/partido/${nx.game_id}` : "/";
   return (
-    <Link href={href} className="group relative z-10 mx-4 block drop-shadow-[0_8px_14px_rgba(var(--shadow-color),0.14)] transition-transform duration-300 hover:-translate-y-0.5">
-      <div className="ticket flex h-[78px] overflow-hidden rounded-2xl bg-pill">
-        <div className="grid w-[62px] shrink-0 place-items-center bg-[linear-gradient(160deg,var(--caramel),var(--brand))] text-on-brand">
+    <Link href={href} className="group relative z-10 mx-4 block transition-transform duration-200 hover:-translate-y-px">
+      <div className="ticket flex h-[74px] overflow-hidden rounded-xl border border-line bg-pill">
+        <div className="grid w-[62px] shrink-0 place-items-center bg-[var(--brand)] text-on-brand">
           <div className="text-center leading-none">
-            <div className="text-[9px] font-extrabold tracking-[0.2em]">SEMANA</div>
+            <div className="text-[9px] font-semibold tracking-[0.18em] opacity-90">SEMANA</div>
             <div className="mt-1 font-display text-[30px] font-semibold">{m.semana}</div>
           </div>
         </div>
@@ -299,7 +309,7 @@ function KickoffTicket({ m }: { m?: MenuData }) {
           ) : nx ? (
             <>
               <div className="flex items-center gap-1 text-[10.5px] font-extrabold uppercase tracking-wider text-mute">
-                <Duo icon={Alarm} tone="rosa" size={15} /> Próximo kickoff
+                <Duo icon={Alarm} tone="canela" size={15} /> Próximo kickoff
               </div>
               <div className="mt-0.5 flex items-center gap-1 text-[12px] font-bold text-ink2">
                 <MiniLogo t={nx.away} size={18} /> {nx.away.abbr} <span className="text-mute">@</span> <MiniLogo t={nx.home} size={18} /> {nx.home.abbr}
@@ -332,7 +342,7 @@ function ClipDelMomento({ clips }: { clips: Clip[] }) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between px-1">
-        <span className="flex items-center gap-1 font-hand text-[17px] font-semibold text-brand"><Duo icon={Popcorn} tone="lila" size={19} /> clip del momento</span>
+        <span className="flex items-center gap-1.5 text-[10.5px] font-extrabold uppercase tracking-[0.14em] text-mute"><Duo icon={Popcorn} tone="lila" size={16} /> Clip del momento</span>
         <Link href="/videos" className="text-[11px] font-bold text-mute hover:text-brand">ver todos</Link>
       </div>
       <button onClick={() => play(c, clips)} className="group relative block w-full overflow-hidden rounded-2xl text-left ring-1 ring-[var(--border)]" aria-label={`Ver video: ${c.titulo}`}>
@@ -351,7 +361,7 @@ function ClipDelMomento({ clips }: { clips: Clip[] }) {
         <div className="mt-1.5 flex justify-center gap-1">
           {clips.map((x, k) => (
             <button key={x.id} onClick={() => setI(k)} aria-label={`Clip ${k + 1}`}
-              className={clsx("h-1.5 rounded-full transition-all duration-300", k === i % clips.length ? "w-4 bg-pink" : "w-1.5 bg-[var(--border-strong)]")} />
+              className={clsx("h-1.5 rounded-full transition-all duration-300", k === i % clips.length ? "w-4 bg-[var(--brand)]" : "w-1.5 bg-[var(--border-strong)]")} />
           ))}
         </div>
       )}
@@ -383,7 +393,7 @@ function ClipMini({ clips }: { clips: Clip[] }) {
         </span>
       </span>
       <span key={c.id} className="swap-in min-w-0">
-        <span className="flex items-center gap-1 font-hand text-[15px] font-semibold leading-none text-brand"><Duo icon={Popcorn} tone="lila" size={15} /> clip del momento</span>
+        <span className="flex items-center gap-1 whitespace-nowrap text-[11px] font-bold leading-none text-mute"><Duo icon={Popcorn} tone="lila" size={13} /> Clip del momento</span>
         <span className="mt-0.5 line-clamp-2 text-[11.5px] font-bold leading-tight text-ink">{c.titulo}</span>
       </span>
     </button>
@@ -400,8 +410,8 @@ function CinnaTip({ tips, mood }: { tips: string[]; mood: Mood }) {
   const tip = tips[i % tips.length];
   return (
     <div className="flex items-end gap-1.5">
-      <CinnaBun size={42} mood={mood} className="bob shrink-0" />
-      <div key={tip} className="swap-in relative min-h-[44px] flex-1 rounded-2xl rounded-bl-[4px] border border-line bg-pill px-3 py-1.5 font-hand text-[16px] font-medium leading-[1.15] text-ink2 shadow-sm">
+      <CinnaBun size={36} mood={mood} className="shrink-0" />
+      <div key={tip} className="swap-in relative min-h-[44px] flex-1 rounded-xl rounded-bl-[4px] border border-line bg-pill px-3 py-2 text-[12px] leading-snug text-ink2">
         {tip}
       </div>
     </div>
@@ -444,7 +454,7 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
   const mins = next ? Math.max(0, Math.round((next.getTime() - Date.now()) / 60000)) : null;
 
   return (
-    <header className="sticky top-0 z-20 border-b border-line bg-page/85 backdrop-blur-md">
+    <header className="sticky top-0 z-20 border-b border-line bg-page/90 backdrop-blur-md">
       <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-2.5 px-4 py-3 md:flex-nowrap md:px-8">
         <button onClick={onMenu} aria-label="Abrir menú" className="rounded-xl border border-line bg-s1 p-2 text-ink2 md:hidden"><MenuIcon size={18} /></button>
         <Link href="/" className="flex shrink-0 items-center gap-2 md:hidden">
@@ -453,17 +463,18 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
         </Link>
         <SearchBox />
         <div className="ml-auto flex items-center gap-2">
+          <BotonEscanear />
           <div className="flex items-center gap-2 whitespace-nowrap rounded-full border border-line bg-s1 px-3 py-1.5 text-xs">
             {running ? (
               <>
                 <RefreshCw size={13} className="spin text-brand" />
-                <span className="hidden max-w-[210px] truncate text-ink2 sm:inline">{st?.state.step ?? "Horneando datos"}…</span>
+                <span className="hidden max-w-[210px] truncate text-ink2 sm:inline">{st?.state.step ?? "Actualizando datos"}…</span>
               </>
             ) : (
               <>
                 <span className={clsx("h-2 w-2 rounded-full", st?.stale ? "bg-[var(--warning)]" : "bg-[var(--good)]")} />
                 <span className="text-ink2">
-                  <span className="hidden sm:inline">Recién horneado </span><span className="hidden min-[420px]:inline">{ago(last)}</span>
+                  <span className="hidden sm:inline">Actualizado </span><span className="hidden min-[420px]:inline">{ago(last)}</span>
                   {mins != null && <span className="hidden text-mute lg:inline"> · próxima en {mins} min</span>}
                 </span>
               </>

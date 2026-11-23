@@ -77,7 +77,11 @@ def guardar_minimos(texto: str) -> dict:
 
 
 def _min_step(p: dict, stat: str, ctx: dict) -> tuple[int | None, str]:
+    from . import lineas_casa as LC
     k = f"{p['game_id']}|{p['player_id']}|{stat}"
+    mios = LC.escalones(p["game_id"], p["player_id"], stat)          # tus capturas de Playdoit/Draftea
+    if mios:
+        return mios[0], "tu captura"
     if k in ctx["minimos"]:
         return int(ctx["minimos"][k]["x"]), "Draftea"
     real = (ctx["pd"].get("steps") or {}).get(f"{p['game_id']}|{p['player_id']}|{ES.MARKET.get(stat, stat)}") or []
@@ -87,13 +91,7 @@ def _min_step(p: dict, stat: str, ctx: dict) -> tuple[int | None, str]:
     L = e.get("market_line")
     if L is None:
         return None, ""
-    L = float(L)
-    if stat == "pass_yds":
-        return int(L - 14.5), "estimado"
-    if stat == "pass_cmp":
-        return int(L - 1.5), "estimado"
-    grid = ES.estimated_grid(stat, L)
-    return (int(grid[0]) if grid else None), "estimado"
+    return LC.estimado_min(stat, float(L)), "estimado"     # patrón de la casa, corregido con tus capturas
 
 
 # ====================================================================== plan de juego de cada partido
@@ -119,6 +117,9 @@ def plan_de_juego(g: dict, ctx: dict) -> list[str]:
     wind = (g.get("weather") or {}).get("wind_mph") or 0
     if wind >= 15:
         out.append(f"Viento de {wind:.0f} mph: castiga el juego aéreo (pases largos, yardas)")
+    ll = (g.get("weather") or {}).get("lluvia") or {}
+    if ll.get("veredicto") in ("lluvia", "posible"):
+        out.append(ll["texto"] + ": contexto (su efecto en las líneas todavía no está validado)")
     return out
 
 
@@ -142,6 +143,16 @@ def _salud(p: dict, stat: str, ctx: dict, team_players: list[dict]) -> tuple[lis
     if dep:
         out.append("Depende de " + ", ".join(f"{n} ({x:.0%} de jugar)" for n, x in dep))
         grav = max(grav, 1)
+    if p["position"] == "RB" and stat in ("rush_yds", "rush_att"):
+        # regresa un compañero que se llevaba 15%+ de los acarreos: medido 2022-25 (110 casos), el que lo suplía
+        # sacó ~9% menos de lo proyectado, pero no en todas las temporadas (2025 al revés): contexto, no ajuste
+        vuelve = [q["name"] for q in team_players if q["position"] == "RB" and q["player_id"] != p["player_id"]
+                  and (q.get("role") or {}).get("returning")
+                  and ((q.get("role") or {}).get("car_share_proj") or 0) >= 0.15
+                  and ((q.get("availability") or {}).get("p_play") or 1) >= 0.5]
+        if vuelve:
+            out.append(f"Regresa {', '.join(vuelve)} a repartir acarreos (cuando vuelve un compañero, el que suplía "
+                       "suele sacar ~9% menos; 3 de 4 temporadas)")
     if p["position"] == "QB":                                   # receptores principales fuera / en duda
         rec = sorted([q for q in team_players if q["position"] in ("WR", "TE")],
                      key=lambda q: -((q.get("role") or {}).get("tgt_share") or 0))[:3]
@@ -236,6 +247,7 @@ def _evaluar(p: dict, stat: str, g: dict, ctx: dict, team_players: list[dict], x
     return {"game_id": p["game_id"], "player_id": p["player_id"], "market": stat, "kind": "alt", "side": "over",
             "line": x - 0.5, "step": x, "prob": pr, "p_kalshi": pk, "fuente_minimo": fuente,
             "titulo": f"{p['name']}: {x}+ {LABEL[stat]}", "name": p["name"], "team": p["team"], "opp": opp,
+            "headshot": p.get("headshot"),
             "partido": f"{g['away']} @ {g['home']}", "kickoff": g["kickoff"], "proyeccion": e.get("med"),
             "linea_casa": e.get("market_line"), "a_favor": favor, "en_contra": contra, "racha": racha,
             "sensibilidad": sens, "semaforo": "rojo" if rojo else ("amarillo" if amarillo else "verde"),
@@ -252,11 +264,12 @@ def MU_context(opp, role, stat):
 def _joint(legs: list[dict], ctx: dict) -> float:
     by = {}
     for l in legs:
-        h = ctx["H"].get(l["titulo"])
+        key = f"{l['game_id']}|{l['titulo']}"
+        h = ctx["H"].get(key)
         if h is None:
             J = ctx["J"].get(l["game_id"])
             h = JT.hits(J, ctx["dist"], {**l, "pick_id": l["titulo"]}, l["prob"]) if J is not None else None
-            ctx["H"][l["titulo"]] = h
+            ctx["H"][key] = h
         if h is None:
             return float(np.prod([x["prob"] for x in legs]))
         by[l["game_id"]] = h if l["game_id"] not in by else (by[l["game_id"]] & h)
@@ -382,7 +395,7 @@ def build(semaforo_min: str = "amarillo", n_legs=(3, 4, 5), solo: str | None = N
                             "pago_estimado": round(float(np.prod([l["dec"] for l in combo])), 2),
                             "partidos": sorted({l["partido"] for l in combo})})
     revisar = sorted({t for l in pool[:16] for t in l["en_contra"] if "duda" in t or "lesión" in t or "Depende" in t})
-    keep = ("titulo", "partido", "kickoff", "prob", "p_kalshi", "fuente_minimo", "proyeccion", "linea_casa", "a_favor",
+    keep = ("titulo", "partido", "kickoff", "prob", "p_kalshi", "fuente_minimo", "proyeccion", "linea_casa", "a_favor", "headshot",
             "en_contra", "racha", "semaforo", "fuerza", "step", "market", "name", "team", "opp")
     return {"semana": wk, "parlays": parlays,
             "patas": [{k: (round(v, 3) if isinstance(v, float) else v) for k, v in l.items() if k in keep} for l in usable[:20]],

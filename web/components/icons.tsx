@@ -7,7 +7,7 @@ import clsx from "clsx";
  * Íconos de CinnaParleys: Phosphor Icons (MIT) en estilo duotono, pintados con la paleta de la app:
  * contorno en el tono fuerte y relleno pastel. Cada sección tiene su tono para que se reconozca de un vistazo.
  */
-export type Tone = "canela" | "rosa" | "cielo" | "menta" | "miel" | "lila";
+export type Tone = "canela" | "rosa" | "cielo" | "menta" | "miel" | "lila" | "neutro";
 export type { PIcon };
 
 export function Duo({ icon: I, size = 22, tone = "canela", className }: { icon: PIcon; size?: number; tone?: Tone; className?: string }) {

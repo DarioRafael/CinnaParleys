@@ -184,3 +184,21 @@ def partido(espn_id: str, status: str) -> dict:
     if d:
         db.kv_set(key, out)
     return out
+
+
+def buscar(clip_id: str) -> str | None:
+    """mp4 de un clip ya conocido (caché general o videos de un partido). Sólo URLs de ESPN: nada de enlaces ajenos."""
+    for c in (db.kv_get("videos_cache") or {}).get("clips") or []:
+        if c.get("id") == clip_id:
+            return c.get("mp4")
+    for r in db.query("SELECT value FROM kv WHERE key LIKE 'jugadas_%'"):
+        for c in (db.loads(r["value"], {}) or {}).get("videos") or []:
+            if c.get("id") == clip_id:
+                return c.get("mp4")
+    return None
+
+
+def es_de_espn(url: str | None) -> bool:
+    from urllib.parse import urlparse
+    host = urlparse(url or "").hostname or ""
+    return host.endswith(("espncdn.com", "akamaized.net", "espn.com", "dssott.com"))
